@@ -1,6 +1,6 @@
 const HQ_CONFIG = {
   SUPABASE_URL: "https://eyinimyrycqaafupkaaa.supabase.co",
-  SUPABASE_ANON_KEY: "sb_publishable_fp0FqO4qtW4jihR-GDS8Sw_LVfNAxRf",
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV5aW5pbXlyeWNxYWFmdXBrYWFhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUzOTEzNjAsImV4cCI6MjExMDk2NzM2MH0.s8hXWZ7FEg8CF0gccz9_txft-2nui1bEX_NPosdHaZ4",
   ROOMS: [
     { id: "Fábrica de Software", label: "FÁBRICA DE SOFTWARE", x: 20, y: 20, w: 370, h: 150, color: "#1e293b", border: "#3b82f6" },
     { id: "Sala de Mídia & Conteúdo", label: "SALA DE MÍDIA & CONTEÚDO", x: 410, y: 20, w: 370, h: 150, color: "#1e293b", border: "#10b981" },
