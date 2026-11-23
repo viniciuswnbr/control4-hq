@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Control 4 HQ | Orquestrador Visual de Agentes</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', system-ui, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; margin: 0; padding: 16px; display: flex; flex-direction: column; align-items: center; }
+    header { width: 100%; max-width: 1150px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; background: #1e293b; padding: 12px 20px; border-radius: 10px; border: 1px solid #334155; }
+    h1 { margin: 0; font-size: 1.2rem; display: flex; align-items: center; gap: 10px; }
+    .badge { font-size: 0.75rem; background: #10b98122; color: #10b981; padding: 4px 10px; border-radius: 20px; border: 1px solid #10b98155; }
+    .btn { background: #2563eb; color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .btn:hover { background: #1d4ed8; }
+    .btn-secondary { background: #334155; }
+    .main-grid { display: grid; grid-template-columns: 800px 330px; gap: 16px; max-width: 1150px; }
+    canvas { background: #111827; border-radius: 10px; border: 2px solid #334155; cursor: pointer; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
+    .sidebar { background: #1e293b; border-radius: 10px; border: 1px solid #334155; padding: 14px; display: flex; flex-direction: column; height: 524px; }
+    .sidebar h2 { margin: 0 0 10px 0; font-size: 0.95rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+    .log-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; font-size: 0.8rem; }
+    .log-item { background: #0f172a; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #3b82f6; }
+    .log-item.SUCCESS { border-left-color: #10b981; }
+    .log-item.ERROR { border-left-color: #ef4444; background: #450a0a44; }
+    .log-item.WARNING { border-left-color: #f59e0b; }
+    .log-time { color: #64748b; font-size: 0.7rem; }
+    .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); justify-content: center; align-items: center; z-index: 50; }
+    .modal { background: #1e293b; border: 1px solid #475569; border-radius: 12px; width: 90%; max-width: 500px; padding: 20px; box-shadow: 0 20px 40px rgba(0,0,0,0.6); }
+    .modal h3 { margin-top: 0; color: #f8fafc; }
+    .modal label { display: block; font-size: 0.8rem; color: #94a3b8; margin: 10px 0 4px; }
+    .modal select, .modal textarea { width: 100%; background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 6px; padding: 10px; font-size: 0.9rem; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🏢 CONTROL 4 HQ <span class="badge" id="conn-status">● Conectando...</span></h1>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-secondary" onclick="openBriefing()">☀️ Briefing Matinal</button>
+      <button class="btn" onclick="openMissionModal()">+ Nova Missão Rápida</button>
+    </div>
+  </header>
+  <div class="main-grid">
+    <canvas id="hqCanvas" width="800" height="520"></canvas>
+    <div class="sidebar">
+      <h2>📡 Telemetria & War Room</h2>
+      <div class="log-list" id="logList"></div>
+    </div>
+  </div>
+  <div class="modal-overlay" id="missionModal">
+    <div class="modal">
+      <h3 id="modalTitle">Despachar Missão para Agente</h3>
+      <p id="modalContext" style="font-size:0.8rem; color:#94a3b8; margin-top:-8px;"></p>
+      <label>Agente / Projeto Alvo</label>
+      <select id="agentSelect"></select>
+      <label>Tipo de Operação</label>
+      <select id="taskTypeSelect">
+        <option value="FEATURE">🚀 Nova Feature / Implementação</option>
+        <option value="BUGFIX">🚨 Correção de Bug (War Room)</option>
+        <option value="REFACTOR">♻️ Refatoração / Otimização</option>
+        <option value="BOT">🤖 Nova Automação / Script</option>
+      </select>
+      <label>Sua Ideia Bruta (O Gemini vai transformar em Spec Técnica e abrir na IDE)</label>
+      <textarea id="rawIdeaInput" rows="4" placeholder="Ex: Criar filtro por data e status no painel de pedidos da Juliana..."></textarea>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeModals()">Cancelar</button>
+        <button class="btn" onclick="dispatchMission()">⚡ Enviar para IDE</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal-overlay" id="briefingModal">
+    <div class="modal">
+      <h3>☀️ Briefing Executivo do Ecossistema</h3>
+      <div id="briefingContent" style="font-size:0.88rem; line-height:1.5; color:#cbd5e1; max-height:350px; overflow-y:auto;"></div>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeModals()">Fechar</button>
+      </div>
+    </div>
+  </div>
+  <script src="config.js"></script>
+  <script src="engine.js"></script>
+</body>
+</html>
