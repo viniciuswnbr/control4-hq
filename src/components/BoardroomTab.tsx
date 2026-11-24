@@ -684,7 +684,7 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
           </div>
           <div style={{ marginTop: 4 }}>
             Clique em uma das 6 cadeiras executivas acima para gerar a proposta
-            inicial via Gemini 2.5 Flash.
+            inicial via Gemini 3.8 Flash.
           </div>
         </div>
       ) : (
