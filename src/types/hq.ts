@@ -58,3 +58,33 @@ export interface StrategicIdea {
   status: StrategicIdeaStatus;
   created_at?: string;
 }
+
+export type DepartmentId =
+  | 'strategy'
+  | 'tech'
+  | 'design'
+  | 'marketing'
+  | 'content'
+  | 'ops';
+
+export interface PeerReviewItem {
+  id: string;
+  department: DepartmentId;
+  content: string;
+  created_at: string;
+}
+
+export type BoardroomSessionStatus = 'draft' | 'approved' | 'discarded';
+
+export interface BoardroomSession {
+  id: string;
+  project_id: string;
+  lead_department: DepartmentId;
+  focus_context: string | null;
+  proposal_text: string;
+  peer_reviews: PeerReviewItem[] | null;
+  final_spec: string | null;
+  status: BoardroomSessionStatus;
+  created_at: string;
+  updated_at?: string | null;
+}

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { LayoutDashboard, Radar } from 'lucide-react';
+import { Building2, LayoutDashboard } from 'lucide-react';
 import { supabase } from './lib/supabase';
+import { BoardroomTab } from './components/BoardroomTab';
 import { CommandCenterTab } from './components/CommandCenterTab';
-import { StrategicRadarTab } from './components/StrategicRadarTab';
 import type { Agent, ExecutionLog, Mission, MissionStatus, TaskType } from './types/hq';
 
-type ActiveTab = 'command-center' | 'strategic-radar';
+type ActiveTab = 'command-center' | 'boardroom';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('command-center');
@@ -287,11 +287,11 @@ Responda APENAS com um array JSON válido de 3 strings curtas e diretas (sem mar
         </button>
         <button
           type="button"
-          className={`nav-tab ${activeTab === 'strategic-radar' ? 'active' : ''}`}
-          onClick={() => setActiveTab('strategic-radar')}
+          className={`nav-tab ${activeTab === 'boardroom' ? 'active' : ''}`}
+          onClick={() => setActiveTab('boardroom')}
         >
-          <Radar size={16} />
-          Radar Estratégico
+          <Building2 size={16} />
+          Conselho Executivo
         </button>
       </nav>
 
@@ -313,7 +313,10 @@ Responda APENAS com um array JSON válido de 3 strings curtas e diretas (sem mar
           onAuditProject={(agentId) => void handleAuditProject(agentId)}
         />
       ) : (
-        <StrategicRadarTab onMissionCreated={() => void loadMissions()} />
+        <BoardroomTab
+          agents={agents}
+          onMissionCreated={() => void loadMissions()}
+        />
       )}
 
       {/* Modal Nova Missão / Ideia */}
