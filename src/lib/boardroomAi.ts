@@ -1,14 +1,28 @@
 import { getDepartmentById } from '../data/departments';
 import type { DepartmentId } from '../types/hq';
 
-const GEMINI_MODEL = 'gemini-3.8-flash';
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+export const GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-lite',
+  'gemini-3.5-flash',
+] as const;
+
+const RETRYABLE_STATUS_CODES = new Set([503, 429, 404]);
+
+function getGeminiEndpoint(model: string): string {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+}
 
 export interface ProposeInput {
   projectId: string;
   department: DepartmentId;
   focusContext: string;
   projectSummary: string;
+}
+
+export interface ProposeResult {
+  text: string;
+  model: string;
 }
 
 export interface PeerReviewInput {
@@ -22,6 +36,12 @@ export interface PeerReviewInput {
 export interface PeerReviewResult {
   department: DepartmentId;
   content: string;
+  model: string;
+}
+
+interface GeminiCallResult {
+  text: string;
+  model: string;
 }
 
 export function getBoardroomGeminiKey(): string {
@@ -37,7 +57,7 @@ async function callGeminiFlash(
   systemInstruction: string,
   userPrompt: string,
   temperature = 0.55
-): Promise<string> {
+): Promise<GeminiCallResult> {
   const apiKey = getBoardroomGeminiKey();
   if (!apiKey) {
     throw new Error(
@@ -45,52 +65,71 @@ async function callGeminiFlash(
     );
   }
 
-  const response = await fetch(`${GEMINI_ENDPOINT}?key=${encodeURIComponent(apiKey)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: {
-        parts: [{ text: systemInstruction }],
-      },
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: userPrompt }],
-        },
-      ],
-      generationConfig: {
-        temperature,
-        maxOutputTokens: 2048,
-      },
-    }),
-  });
+  let lastError: Error | null = null;
 
-  const payload = (await response.json()) as {
-    error?: { message?: string };
-    candidates?: Array<{
-      content?: { parts?: Array<{ text?: string }> };
-    }>;
-  };
+  for (let i = 0; i < GEMINI_MODELS.length; i++) {
+    const model = GEMINI_MODELS[i];
+    const isLastAttempt = i === GEMINI_MODELS.length - 1;
 
-  if (!response.ok) {
-    throw new Error(
-      payload?.error?.message || `Erro HTTP ${response.status} na API Gemini.`
+    const response = await fetch(
+      `${getGeminiEndpoint(model)}?key=${encodeURIComponent(apiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: {
+            parts: [{ text: systemInstruction }],
+          },
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: userPrompt }],
+            },
+          ],
+          generationConfig: {
+            temperature,
+            maxOutputTokens: 2048,
+          },
+        }),
+      }
     );
+
+    const payload = (await response.json().catch(() => ({}))) as {
+      error?: { message?: string };
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> };
+      }>;
+    };
+
+    if (!response.ok) {
+      const errorMsg =
+        payload?.error?.message ||
+        `Erro HTTP ${response.status} na API Gemini (${model}).`;
+      if (RETRYABLE_STATUS_CODES.has(response.status) && !isLastAttempt) {
+        lastError = new Error(errorMsg);
+        continue;
+      }
+      throw new Error(errorMsg);
+    }
+
+    const text = payload?.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || '')
+      .join('')
+      .trim();
+
+    if (!text) {
+      throw new Error(`A API Gemini (${model}) retornou uma resposta vazia.`);
+    }
+
+    return { text, model };
   }
 
-  const text = payload?.candidates?.[0]?.content?.parts
-    ?.map((part) => part.text || '')
-    .join('')
-    .trim();
-
-  if (!text) {
-    throw new Error('A API Gemini retornou uma resposta vazia.');
-  }
-
-  return text;
+  throw lastError ?? new Error('Falha ao consultar os modelos Gemini.');
 }
 
-export async function runBoardroomPropose(input: ProposeInput): Promise<string> {
+export async function runBoardroomPropose(
+  input: ProposeInput
+): Promise<ProposeResult> {
   const dept = getDepartmentById(input.department);
   const focusBlock = input.focusContext.trim()
     ? input.focusContext.trim()
@@ -134,10 +173,15 @@ ${input.currentProposal}
 
 Emita seu parecer executivo cruzado.`;
 
-    const content = await callGeminiFlash(systemInstruction, userPrompt, 0.45);
+    const { text: content, model } = await callGeminiFlash(
+      systemInstruction,
+      userPrompt,
+      0.45
+    );
     return {
       department: reviewDeptId,
       content,
+      model,
     };
   });
 

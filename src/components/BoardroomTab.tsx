@@ -233,7 +233,7 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
     setGeneratingDept(deptId);
 
     try {
-      const proposal = await runBoardroomPropose({
+      const { text: proposal, model: usedModel } = await runBoardroomPropose({
         projectId: selectedProjectId,
         department: deptId,
         focusContext,
@@ -288,7 +288,7 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
       );
       setSelectedReviewDepts(others);
       setStatusFeedback(
-        `Proposta de ${getDepartmentById(deptId).name} gerada e salva como rascunho.`
+        `Proposta de ${getDepartmentById(deptId).name} gerada e salva como rascunho. • Gerado via ${usedModel}`
       );
     } catch (err) {
       setErrorMessage(
@@ -398,8 +398,11 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
 
       setActiveSession(data as BoardroomSession);
       setPeerReviews(mergedReviews);
+      const usedModels = Array.from(new Set(results.map((r) => r.model))).join(
+        ', '
+      );
       setStatusFeedback(
-        `${newReviewItems.length} parecer(es) cruzado(s) gerado(s) com sucesso.`
+        `${newReviewItems.length} parecer(es) cruzado(s) gerado(s) com sucesso. • Gerado via ${usedModels}`
       );
     } catch (err) {
       setErrorMessage(
@@ -664,6 +667,16 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
       </section>
 
       {errorMessage && <div className="error-banner">{errorMessage}</div>}
+      {(generatingDept !== null || generatingReviews) && (
+        <div className="status-banner">
+          <Loader2 size={15} className="spin" />
+          <span>
+            {generatingDept !== null
+              ? `Consultando ${getDepartmentById(generatingDept).name} via Gemini (com fallback automático)...`
+              : 'Consultando diretorias para parecer cruzado via Gemini...'}
+          </span>
+        </div>
+      )}
       {statusFeedback && (
         <div className="status-banner">
           <Sparkles size={15} />
