@@ -1,16 +1,26 @@
+import { ExternalLink, HelpCircle, Loader2, Play } from 'lucide-react';
+import { resolveProjectConfig, type ProjectConfig } from '../lib/projectLauncher';
 import type { Agent, ExecutionLog, Mission } from '../types/hq';
+
+export interface LaunchFeedback {
+  state: 'idle' | 'starting' | 'active' | 'offline' | 'error';
+  message?: string;
+}
 
 interface CommandCenterTabProps {
   agents: Agent[];
   missions: Mission[];
   logs: ExecutionLog[];
   quickInputs: Record<string, string>;
+  launchFeedbacks: Record<string, LaunchFeedback>;
   onQuickInputChange: (agentId: string, value: string) => void;
   onQuickAddIdea: (agentId: string) => void;
   onPromoteToIDE: (missionId: string) => void;
   onCompleteMission: (missionId: string, agentId: string) => void;
   onDeleteMission: (missionId: string) => void;
   onAuditProject: (agentId: string) => void;
+  onLaunchProject: (agent: Agent, config: ProjectConfig) => void;
+  onOpenFallbackModal: (config: ProjectConfig, bridgeOffline?: boolean) => void;
 }
 
 export function CommandCenterTab({
@@ -18,12 +28,15 @@ export function CommandCenterTab({
   missions,
   logs,
   quickInputs,
+  launchFeedbacks,
   onQuickInputChange,
   onQuickAddIdea,
   onPromoteToIDE,
   onCompleteMission,
   onDeleteMission,
   onAuditProject,
+  onLaunchProject,
+  onOpenFallbackModal,
 }: CommandCenterTabProps) {
   return (
     <div className="layout">
@@ -54,6 +67,24 @@ export function CommandCenterTab({
             ? agent.local_path.split('\\').pop() || agent.local_path
             : agent.id;
 
+          const resolvedConfig: ProjectConfig = resolveProjectConfig(
+            agent.id,
+            agent.project_name
+          ) || {
+            slug: agent.id,
+            agent_ids: [agent.id],
+            nome: agent.project_name,
+            tipo: agent.url && agent.url.startsWith('https://') ? 'cloud' : 'local',
+            modo: agent.url && agent.url.startsWith('http') ? 'web' : 'script',
+            url_destino: agent.url && agent.url.startsWith('http') ? agent.url : '',
+            diretorio_local: agent.local_path || '',
+            comando_start: 'python main.py',
+            instrucoes_fallback: 'Abra o terminal na pasta local do projeto e inicie manualmente.',
+          };
+
+          const feedback = launchFeedbacks[agent.id] || { state: 'idle' };
+          const isStarting = feedback.state === 'starting';
+
           return (
             <div key={agent.id} className={cardClass}>
               <div className="card-header">
@@ -61,15 +92,17 @@ export function CommandCenterTab({
                   <h3 className="card-title">{agent.project_name}</h3>
                   <div className="card-meta">
                     {agent.room} •{' '}
-                    {agent.url && agent.url.startsWith('http') ? (
+                    {resolvedConfig.tipo === 'cloud' && resolvedConfig.url_destino ? (
                       <a
-                        href={agent.url}
+                        href={resolvedConfig.url_destino}
                         target="_blank"
                         rel="noreferrer"
                         style={{ color: '#60a5fa', textDecoration: 'none' }}
                       >
-                        ↗ Abrir App
+                        ☁️ Cloud
                       </a>
+                    ) : resolvedConfig.porta ? (
+                      <span>🖥️ Porta {resolvedConfig.porta}</span>
                     ) : (
                       <span>📁 {folderName}</span>
                     )}
@@ -79,6 +112,41 @@ export function CommandCenterTab({
               </div>
 
               <div className="stack-line">{agent.stack || 'Stack Padrão'}</div>
+
+              <div className="launch-row">
+                <button
+                  type="button"
+                  className={`btn btn-sm btn-launch ${
+                    resolvedConfig.tipo === 'cloud' ? 'btn-launch-cloud' : 'btn-launch-local'
+                  }`}
+                  disabled={isStarting}
+                  onClick={() => onLaunchProject(agent, resolvedConfig)}
+                >
+                  {isStarting ? (
+                    <Loader2 size={14} className="spin-icon" />
+                  ) : resolvedConfig.tipo === 'cloud' ? (
+                    <ExternalLink size={14} />
+                  ) : (
+                    <Play size={14} />
+                  )}
+                  {isStarting ? 'Iniciando...' : 'Abrir Sistema'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-ghost btn-help-icon"
+                  title="Instruções manuais e comando de execução"
+                  aria-label={`Instruções manuais para ${agent.project_name}`}
+                  onClick={() => onOpenFallbackModal(resolvedConfig, false)}
+                >
+                  <HelpCircle size={14} />
+                </button>
+              </div>
+
+              {feedback.state !== 'idle' && feedback.message && (
+                <div className={`launch-feedback launch-${feedback.state}`}>
+                  {feedback.message}
+                </div>
+              )}
 
               <div className="backlog-box">
                 <div className="backlog-header">

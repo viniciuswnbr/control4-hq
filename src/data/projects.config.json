@@ -1,0 +1,96 @@
+[
+  {
+    "slug": "cotocopositivo",
+    "agent_ids": ["cotocopositivo"],
+    "nome": "CotocoPositivo Web Hub",
+    "tipo": "cloud",
+    "modo": "web",
+    "url_destino": "https://cotocopositivo.vercel.app",
+    "diretorio_local": "C:\\Users\\shev\\Documents\\cotocopositivo",
+    "comando_start": "npx serve .",
+    "instrucoes_fallback": "Projeto hospedado em produção na Vercel. Clique no link ou abra https://cotocopositivo.vercel.app no navegador."
+  },
+  {
+    "slug": "ct4",
+    "agent_ids": ["control4-sistemas", "ct4"],
+    "nome": "Control 4 Sistemas",
+    "tipo": "cloud",
+    "modo": "web",
+    "url_destino": "https://control4sistemas.com.br",
+    "diretorio_local": "C:\\Users\\shev\\Documents\\ct4",
+    "comando_start": "npx serve .",
+    "instrucoes_fallback": "Site oficial em produção na Vercel. Acesse https://control4sistemas.com.br diretamente no navegador."
+  },
+  {
+    "slug": "centuria-dashboard",
+    "agent_ids": ["centuria-dashboard"],
+    "nome": "Cockpit Estratégia Centúria",
+    "tipo": "local",
+    "modo": "web",
+    "porta": 8501,
+    "url_destino": "http://localhost:8501",
+    "diretorio_local": "C:\\Users\\shev\\Documents\\centuria-dashboard",
+    "comando_start": ".venv\\Scripts\\python.exe -m streamlit run app/dashboard.py --server.port 8501 --server.headless true",
+    "instrucoes_fallback": "Entre na pasta do projeto, ative o .venv e inicie o Streamlit na porta fixa 8501 para evitar conflito com outros painéis."
+  },
+  {
+    "slug": "notionLocalhost",
+    "agent_ids": ["notion-localhost", "notionLocalhost"],
+    "nome": "Biblioteca de Código & Prompts",
+    "tipo": "local",
+    "modo": "web",
+    "porta": 3001,
+    "url_destino": "http://localhost:3001",
+    "diretorio_local": "C:\\Users\\shev\\Documents\\notionLocalhost",
+    "comando_start": "python -m uvicorn app:app --host 127.0.0.1 --port 3001",
+    "instrucoes_fallback": "Execute o backend FastAPI/Uvicorn na porta 3001 dentro da pasta notionLocalhost e acesse http://localhost:3001."
+  },
+  {
+    "slug": "IAExplicaBot",
+    "agent_ids": ["ia-explica-bot", "IAExplicaBot"],
+    "nome": "IA Explica Bot",
+    "tipo": "local",
+    "modo": "script",
+    "porta": null,
+    "url_destino": "",
+    "diretorio_local": "C:\\Users\\shev\\Documents\\IAExplicaBot",
+    "comando_start": ".venv\\Scripts\\python.exe main.py",
+    "instrucoes_fallback": "Bot de automação em Python (sem servidor web). Abra um terminal na pasta do projeto e execute python main.py com a .venv ativa."
+  },
+  {
+    "slug": "invest",
+    "agent_ids": ["invest-scripts", "invest"],
+    "nome": "Scripts & Análises Invest",
+    "tipo": "local",
+    "modo": "web",
+    "porta": 8502,
+    "url_destino": "http://localhost:8502",
+    "diretorio_local": "C:\\Users\\shev\\Documents\\invest",
+    "comando_start": "python -m streamlit run app.py --server.port 8502 --server.headless true",
+    "instrucoes_fallback": "Abra o terminal na pasta C:\\Users\\shev\\Documents\\invest e execute o painel na porta exclusiva 8502."
+  },
+  {
+    "slug": "POC_Investimentos",
+    "agent_ids": ["poc-investimentos", "POC_Investimentos"],
+    "nome": "POC Investimentos",
+    "tipo": "local",
+    "modo": "script",
+    "porta": 8503,
+    "url_destino": "http://localhost:8503",
+    "diretorio_local": "C:\\Users\\shev\\Documents\\POC_Investimentos",
+    "comando_start": "venv\\Scripts\\python.exe invest_agent.py",
+    "instrucoes_fallback": "Entre na pasta POC_Investimentos, ative a venv e execute invest_agent.py (ou suba Streamlit na porta 8503)."
+  },
+  {
+    "slug": "juliana",
+    "agent_ids": ["juliana-revendas", "juliana"],
+    "nome": "Sistema de Revendas & Pedidos",
+    "tipo": "local",
+    "modo": "web",
+    "porta": 3002,
+    "url_destino": "http://localhost:3002",
+    "diretorio_local": "C:\\Users\\shev\\Documents\\juliana",
+    "comando_start": "python -m http.server 3002",
+    "instrucoes_fallback": "Inicie um servidor HTTP estático na pasta juliana usando a porta exclusiva 3002 e acesse http://localhost:3002."
+  }
+]

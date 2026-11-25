@@ -1251,3 +1251,114 @@ header {
   white-space: pre-wrap;
   overflow-x: auto;
 }
+
+/* 1-Clique para Abrir & Modal Fallback */
+.launch-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-launch {
+  flex: 1;
+  justify-content: center;
+  padding: 7px 12px;
+  font-size: 0.8rem;
+}
+
+.btn-launch-cloud {
+  background: #0284c7;
+  color: #fff;
+}
+
+.btn-launch-cloud:hover:not(:disabled) {
+  background: #0369a1;
+}
+
+.btn-launch-local {
+  background: #10b981;
+  color: #022c22;
+}
+
+.btn-launch-local:hover:not(:disabled) {
+  background: #059669;
+  color: #fff;
+}
+
+.btn-help-icon {
+  padding: 7px 10px;
+  color: var(--muted);
+}
+
+.launch-feedback {
+  font-size: 0.76rem;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.launch-starting {
+  background: #1d4ed820;
+  color: #93c5fd;
+  border-color: #3b82f640;
+}
+
+.launch-active {
+  background: #10b98120;
+  color: #34d399;
+  border-color: #10b98150;
+}
+
+.launch-offline {
+  background: #f59e0b20;
+  color: #fbbf24;
+  border-color: #f59e0b50;
+}
+
+.launch-error {
+  background: #ef444420;
+  color: #f87171;
+  border-color: #ef444450;
+}
+
+.spin-icon {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.fallback-banner {
+  background: #f59e0b1a;
+  border: 1px solid #f59e0b50;
+  color: #fcd34d;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  margin-bottom: 12px;
+}
+
+.fallback-box {
+  background: #090d16;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.fallback-code {
+  font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 0.8rem;
+  color: #e5e7eb;
+  word-break: break-all;
+}

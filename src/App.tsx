@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Building2, LayoutDashboard } from 'lucide-react';
+import { Building2, Check, Copy, FolderOpen, LayoutDashboard, Terminal } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { BoardroomTab } from './components/BoardroomTab';
-import { CommandCenterTab } from './components/CommandCenterTab';
+import { CommandCenterTab, type LaunchFeedback } from './components/CommandCenterTab';
+import {
+  checkBridgeHealth,
+  launchLocalProject,
+  type ProjectConfig,
+} from './lib/projectLauncher';
 import type { Agent, ExecutionLog, Mission, MissionStatus, TaskType } from './types/hq';
 
 type ActiveTab = 'command-center' | 'boardroom';
@@ -22,6 +27,14 @@ export function App() {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [auditSuggestions, setAuditSuggestions] = useState<string[]>([]);
+
+  // 1-Clique para Abrir
+  const [launchFeedbacks, setLaunchFeedbacks] = useState<Record<string, LaunchFeedback>>({});
+  const [fallbackModal, setFallbackModal] = useState<{
+    config: ProjectConfig;
+    bridgeOffline: boolean;
+  } | null>(null);
+  const [copiedField, setCopiedField] = useState<'path' | 'cmd' | null>(null);
 
   // Form Nova Missão
   const [modalAgentId, setModalAgentId] = useState('');
@@ -235,6 +248,67 @@ Responda APENAS com um array JSON válido de 3 strings curtas e diretas (sem mar
     await loadMissions();
   };
 
+  const handleOpenFallbackModal = (config: ProjectConfig, bridgeOffline = false) => {
+    setCopiedField(null);
+    setFallbackModal({ config, bridgeOffline });
+  };
+
+  const handleCopyText = async (text: string, field: 'path' | 'cmd') => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      window.setTimeout(() => setCopiedField(null), 2000);
+    } catch {
+      // Fallback silencioso caso clipboard não esteja disponível
+    }
+  };
+
+  const handleLaunchProject = async (agent: Agent, config: ProjectConfig) => {
+    if (config.tipo === 'cloud' && config.url_destino) {
+      window.open(config.url_destino, '_blank', 'noopener,noreferrer');
+      return;
+    }
+
+    setLaunchFeedbacks((prev) => ({
+      ...prev,
+      [agent.id]: { state: 'starting', message: 'Iniciando servidor local...' },
+    }));
+
+    const isBridgeOnline = await checkBridgeHealth(3000);
+    if (!isBridgeOnline) {
+      setLaunchFeedbacks((prev) => ({
+        ...prev,
+        [agent.id]: {
+          state: 'offline',
+          message: 'shev-bridge.py offline (timeout 3s). Veja instruções manuais.',
+        },
+      }));
+      handleOpenFallbackModal(config, true);
+      return;
+    }
+
+    try {
+      const result = await launchLocalProject(config.slug);
+      const activeMsg =
+        result.port && result.mode !== 'script'
+          ? `Ativo na porta ${result.port}`
+          : result.message || 'Executado no terminal local';
+
+      setLaunchFeedbacks((prev) => ({
+        ...prev,
+        [agent.id]: { state: 'active', message: activeMsg },
+      }));
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Erro ao iniciar projeto local.';
+      setLaunchFeedbacks((prev) => ({
+        ...prev,
+        [agent.id]: { state: 'error', message },
+      }));
+      handleOpenFallbackModal(config, false);
+    }
+  };
+
   const workingCount = agents.filter((a) => a.status === 'WORKING').length;
   const backlogCount = missions.filter((m) => m.status === 'BACKLOG').length;
 
@@ -301,6 +375,7 @@ Responda APENAS com um array JSON válido de 3 strings curtas e diretas (sem mar
           missions={missions}
           logs={logs}
           quickInputs={quickInputs}
+          launchFeedbacks={launchFeedbacks}
           onQuickInputChange={(agentId, value) =>
             setQuickInputs((prev) => ({ ...prev, [agentId]: value }))
           }
@@ -311,6 +386,8 @@ Responda APENAS com um array JSON válido de 3 strings curtas e diretas (sem mar
           }
           onDeleteMission={(missionId) => void handleDeleteMission(missionId)}
           onAuditProject={(agentId) => void handleAuditProject(agentId)}
+          onLaunchProject={(agent, config) => void handleLaunchProject(agent, config)}
+          onOpenFallbackModal={handleOpenFallbackModal}
         />
       ) : (
         <BoardroomTab
@@ -477,6 +554,109 @@ Responda APENAS com um array JSON válido de 3 strings curtas e diretas (sem mar
                 onClick={handleSaveBrowserKey}
               >
                 Salvar Chave
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Fallback / Instruções Manuais */}
+      {fallbackModal && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setFallbackModal(null);
+          }}
+        >
+          <div className="modal">
+            <h3>
+              {fallbackModal.bridgeOffline
+                ? `⚠️ Bridge Local Offline — ${fallbackModal.config.nome}`
+                : `📖 Execução Manual — ${fallbackModal.config.nome}`}
+            </h3>
+
+            {fallbackModal.bridgeOffline && (
+              <div className="fallback-banner">
+                O <code>shev-bridge.py</code> não respondeu em{' '}
+                <code>http://127.0.0.1:7777</code> (timeout de 3s). Se você
+                estiver no celular ou com o bridge fechado, rode os comandos
+                abaixo no Windows:
+              </div>
+            )}
+
+            <p style={{ fontSize: '0.82rem', color: 'var(--muted)', margin: '4px 0 12px' }}>
+              {fallbackModal.config.instrucoes_fallback}
+            </p>
+
+            {fallbackModal.config.diretorio_local && (
+              <>
+                <label>
+                  <FolderOpen size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                  Pasta do Projeto
+                </label>
+                <div className="fallback-box">
+                  <code className="fallback-code">
+                    {fallbackModal.config.diretorio_local}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost"
+                    onClick={() =>
+                      void handleCopyText(fallbackModal.config.diretorio_local, 'path')
+                    }
+                  >
+                    {copiedField === 'path' ? <Check size={13} /> : <Copy size={13} />}
+                    {copiedField === 'path' ? 'Copiado' : 'Copiar'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {fallbackModal.config.comando_start && (
+              <>
+                <label>
+                  <Terminal size={12} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                  Comando de Execução
+                </label>
+                <div className="fallback-box">
+                  <code className="fallback-code">
+                    {fallbackModal.config.comando_start}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() =>
+                      void handleCopyText(fallbackModal.config.comando_start, 'cmd')
+                    }
+                  >
+                    {copiedField === 'cmd' ? <Check size={13} /> : <Copy size={13} />}
+                    {copiedField === 'cmd' ? 'Copiado!' : 'Copiar Comando'}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {fallbackModal.config.url_destino && (
+              <p style={{ fontSize: '0.78rem', color: '#93c5fd', marginTop: 12 }}>
+                URL de destino:{' '}
+                <a
+                  href={fallbackModal.config.url_destino}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ color: '#60a5fa' }}
+                >
+                  {fallbackModal.config.url_destino}
+                </a>
+              </p>
+            )}
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setFallbackModal(null)}
+              >
+                Fechar
               </button>
             </div>
           </div>
