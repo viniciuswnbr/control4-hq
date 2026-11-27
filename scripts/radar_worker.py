@@ -188,14 +188,23 @@ def processar_execucao(execucao: dict):
                         desconto = ((ref - menor_preco) / ref) * 100 if ref > 0 else 0
                         super_oferta = desconto >= 50.0
 
+                        update_payload = {
+                            "menor_preco_encontrado": menor_preco,
+                            "mercado_vencedor": mercado,
+                            "link_oferta": link,
+                            "super_oferta": super_oferta,
+                            "atualizado_em": datetime.now(timezone.utc).isoformat(),
+                        }
+                        if (
+                            "preco_anterior" in prod
+                            and prod.get("menor_preco_encontrado") is not None
+                        ):
+                            update_payload["preco_anterior"] = prod[
+                                "menor_preco_encontrado"
+                            ]
+
                         supabase.table("radar_produtos").update(
-                            {
-                                "menor_preco_encontrado": menor_preco,
-                                "mercado_vencedor": mercado,
-                                "link_oferta": link,
-                                "super_oferta": super_oferta,
-                                "atualizado_em": datetime.now(timezone.utc).isoformat(),
-                            }
+                            update_payload
                         ).eq("id", prod["id"]).execute()
 
                 browser.close()

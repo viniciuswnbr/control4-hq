@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
+  ArrowDownRight,
+  ArrowUpRight,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   ExternalLink,
+  Eye,
+  EyeOff,
   Flame,
   Loader2,
   MapPin,
-  Pause,
-  Play,
   Plus,
   RefreshCw,
   ShoppingBasket,
+  Store,
   Trash2,
+  Truck,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import './RadarOfertas.css';
@@ -32,10 +38,10 @@ interface RadarProduto {
   produto?: string | null;
   nome_produto?: string | null;
   preco_referencia: number;
+  preco_anterior?: number | null;
   menor_preco_encontrado?: number | null;
   super_oferta?: boolean | null;
   monitorado?: boolean | null;
-  pre_lista?: boolean | null;
   mercado_vencedor?: string | null;
   mercado?: string | null;
   supermercado?: string | null;
@@ -70,42 +76,6 @@ const SUGESTOES_PRODUTOS: SugestaoProduto[] = [
   { nome: 'Peito de Frango 1kg', preco: 22.0 },
 ];
 
-const STALE_EXECUCAO_MS = 5 * 60 * 1000;
-const COOLDOWN_8H_MS = 8 * 60 * 60 * 1000;
-
-function normalizeKey(value: string): string {
-  return value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim()
-    .toLowerCase();
-}
-
-function getProdutoNome(item: RadarProduto): string {
-  return item.nome || item.produto || item.nome_produto || 'Produto';
-}
-
-function getDescontoPercent(item: RadarProduto): number | null {
-  const ref = Number(item.preco_referencia || 0);
-  const menor =
-    item.menor_preco_encontrado !== null && item.menor_preco_encontrado !== undefined
-      ? Number(item.menor_preco_encontrado)
-      : null;
-  if (menor === null || ref <= 0) return null;
-  return ((ref - menor) / ref) * 100;
-}
-
-function isProdutoMonitorado(item: RadarProduto): boolean {
-  return item.monitorado !== false;
-}
-
-function formatRemainingTime(ms: number): string {
-  const totalMinutes = Math.max(1, Math.ceil(ms / 60000));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${hours}h ${String(minutes).padStart(2, '0')}m`;
-}
-
 const DELIVERY_SHORTCUTS: DeliveryShortcut[] = [
   {
     id: 'ifood',
@@ -137,6 +107,9 @@ const DELIVERY_SHORTCUTS: DeliveryShortcut[] = [
   },
 ];
 
+const STALE_EXECUCAO_MS = 5 * 60 * 1000;
+const COOLDOWN_8H_MS = 8 * 60 * 60 * 1000;
+
 const brlFormatter = new Intl.NumberFormat('pt-BR', {
   style: 'currency',
   currency: 'BRL',
@@ -146,14 +119,75 @@ function formatBRL(value: number): string {
   return brlFormatter.format(value);
 }
 
+function normalizeKey(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function getProdutoNome(item: RadarProduto): string {
+  return item.nome || item.produto || item.nome_produto || 'Produto';
+}
+
+function getMercadoNome(item: RadarProduto): string | null {
+  return (
+    item.mercado_vencedor ||
+    item.mercado ||
+    item.supermercado ||
+    item.loja ||
+    null
+  );
+}
+
+function getPrecoAnterior(item: RadarProduto): number {
+  if (item.preco_anterior !== null && item.preco_anterior !== undefined) {
+    return Number(item.preco_anterior);
+  }
+  return Number(item.preco_referencia || 0);
+}
+
+function getDescontoInfo(item: RadarProduto): {
+  valor: number | null;
+  percentual: number | null;
+} {
+  const base = getPrecoAnterior(item);
+  const atual =
+    item.menor_preco_encontrado !== null &&
+    item.menor_preco_encontrado !== undefined
+      ? Number(item.menor_preco_encontrado)
+      : null;
+
+  if (atual === null || base <= 0) {
+    return { valor: null, percentual: null };
+  }
+
+  const valor = base - atual;
+  const percentual = (valor / base) * 100;
+  return { valor, percentual };
+}
+
+function isProdutoVisivel(item: RadarProduto): boolean {
+  return item.monitorado !== false;
+}
+
 function getExecucaoTimestamp(exec: RadarExecucao): string {
   return exec.atualizado_em || exec.criado_em || exec.created_at || '';
 }
 
-function sortProdutos(items: RadarProduto[]): RadarProduto[] {
+function formatRemainingTime(ms: number): string {
+  const totalMinutes = Math.max(1, Math.ceil(ms / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+}
+
+function sortByDesconto(items: RadarProduto[]): RadarProduto[] {
   return [...items].sort((a, b) => {
-    const superDiff = Number(Boolean(b.super_oferta)) - Number(Boolean(a.super_oferta));
-    if (superDiff !== 0) return superDiff;
+    const descA = getDescontoInfo(a).percentual ?? -999;
+    const descB = getDescontoInfo(b).percentual ?? -999;
+    if (descB !== descA) return descB - descA;
     const dateA = a.atualizado_em ? new Date(a.atualizado_em).getTime() : 0;
     const dateB = b.atualizado_em ? new Date(b.atualizado_em).getTime() : 0;
     return dateB - dateA;
@@ -161,13 +195,17 @@ function sortProdutos(items: RadarProduto[]): RadarProduto[] {
 }
 
 export function RadarOfertas() {
+  const [mainTab, setMainTab] = useState<'supermercados' | 'delivery'>('supermercados');
+  const [visibilityFilter, setVisibilityFilter] = useState<'visiveis' | 'ocultos'>('visiveis');
+  const [onlyPromocoes, setOnlyPromocoes] = useState(false);
+  const [showAddForm, setShowAddForm] = useState(false);
+
   const [produtos, setProdutos] = useState<RadarProduto[]>([]);
   const [loadingProdutos, setLoadingProdutos] = useState(true);
   const [execucaoStatus, setExecucaoStatus] = useState<string | null>(null);
   const [ultimoConcluidoEm, setUltimoConcluidoEm] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
-  const [activeTab, setActiveTab] = useState<'monitorados' | 'pausados'>('monitorados');
-  const [togglingMonitorId, setTogglingMonitorId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [updatingIndividualId, setUpdatingIndividualId] = useState<string | null>(null);
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
   const [successMessage, setSuccessMessage] = useState(
@@ -185,13 +223,12 @@ export function RadarOfertas() {
     const { data, error } = await supabase
       .from('radar_produtos')
       .select('*')
-      .order('super_oferta', { ascending: false })
       .order('atualizado_em', { ascending: false });
 
     if (error) {
-      setErrorMsg('Não foi possível carregar os produtos monitorados.');
+      setErrorMsg('Não foi possível carregar os produtos.');
     } else if (data) {
-      setProdutos(sortProdutos(data as RadarProduto[]));
+      setProdutos(sortByDesconto(data as RadarProduto[]));
     }
     setLoadingProdutos(false);
   }, []);
@@ -332,26 +369,40 @@ export function RadarOfertas() {
 
   const isCooldownLocked = cooldownRemainingMs > 0;
 
-  const produtosMonitorados = useMemo(
-    () => produtos.filter((item) => isProdutoMonitorado(item)),
+  const produtosVisiveis = useMemo(
+    () => produtos.filter((item) => isProdutoVisivel(item)),
     [produtos]
   );
 
-  const produtosPausados = useMemo(
-    () => produtos.filter((item) => !isProdutoMonitorado(item)),
+  const produtosOcultos = useMemo(
+    () => produtos.filter((item) => !isProdutoVisivel(item)),
     [produtos]
   );
 
-  const top10PreLista = useMemo(() => {
-    return produtos
-      .map((item) => ({
-        item,
-        desconto: getDescontoPercent(item),
-      }))
-      .filter((entry): entry is { item: RadarProduto; desconto: number } => entry.desconto !== null)
-      .sort((a, b) => b.desconto - a.desconto)
-      .slice(0, 10);
-  }, [produtos]);
+  const listaExibida = useMemo(() => {
+    const base =
+      visibilityFilter === 'visiveis' ? produtosVisiveis : produtosOcultos;
+    if (!onlyPromocoes) return base;
+    return base.filter((item) => {
+      const { valor } = getDescontoInfo(item);
+      return valor !== null && valor > 0;
+    });
+  }, [visibilityFilter, produtosVisiveis, produtosOcultos, onlyPromocoes]);
+
+  const resumoPromocoes = useMemo(() => {
+    const comDesconto = produtosVisiveis.filter((p) => {
+      const { valor } = getDescontoInfo(p);
+      return valor !== null && valor > 0;
+    });
+    const maiorDesconto = comDesconto.reduce((max, p) => {
+      const pct = getDescontoInfo(p).percentual ?? 0;
+      return pct > max ? pct : max;
+    }, 0);
+    return {
+      totalEmPromocao: comDesconto.length,
+      maiorDesconto: Math.round(maiorDesconto),
+    };
+  }, [produtosVisiveis]);
 
   const handleBuscarPromocoes = async () => {
     setErrorMsg(null);
@@ -366,8 +417,8 @@ export function RadarOfertas() {
       return;
     }
 
-    if (produtosMonitorados.length === 0) {
-      setErrorMsg('Ative ou adicione pelo menos 1 produto monitorado antes de buscar.');
+    if (produtosVisiveis.length === 0) {
+      setErrorMsg('Deixe pelo menos 1 produto visível/ativo antes de buscar.');
       return;
     }
 
@@ -388,12 +439,14 @@ export function RadarOfertas() {
     setExecucaoStatus('pendente');
   };
 
-  const handleToggleMonitorado = async (item: RadarProduto) => {
+  const handleToggleVisibilidade = async (item: RadarProduto) => {
     setErrorMsg(null);
-    const nextValue = !isProdutoMonitorado(item);
-    setTogglingMonitorId(item.id);
+    const nextValue = !isProdutoVisivel(item);
+    setTogglingId(item.id);
     setProdutos((prev) =>
-      prev.map((p) => (p.id === item.id ? { ...p, monitorado: nextValue } : p))
+      sortByDesconto(
+        prev.map((p) => (p.id === item.id ? { ...p, monitorado: nextValue } : p))
+      )
     );
 
     const { error } = await supabase
@@ -401,10 +454,10 @@ export function RadarOfertas() {
       .update({ monitorado: nextValue })
       .eq('id', item.id);
 
-    setTogglingMonitorId(null);
+    setTogglingId(null);
 
     if (error) {
-      setErrorMsg('Não foi possível alterar o status de monitoramento.');
+      setErrorMsg('Não foi possível alterar a exibição do item.');
       void loadProdutos();
     }
   };
@@ -448,7 +501,7 @@ export function RadarOfertas() {
     }
 
     if (data) {
-      setProdutos((prev) => sortProdutos([data as RadarProduto, ...prev]));
+      setProdutos((prev) => sortByDesconto([data as RadarProduto, ...prev]));
     }
   };
 
@@ -487,7 +540,7 @@ export function RadarOfertas() {
     }
 
     if (data) {
-      setProdutos((prev) => sortProdutos([data as RadarProduto, ...prev]));
+      setProdutos((prev) => sortByDesconto([data as RadarProduto, ...prev]));
     }
     setNovoNome('');
     setNovoPreco('');
@@ -506,8 +559,6 @@ export function RadarOfertas() {
 
   const isBuscando = execucaoStatus === 'pendente' || execucaoStatus === 'rodando';
   const nomesNaLista = new Set(produtos.map((p) => normalizeKey(getProdutoNome(p))));
-  const produtosDaAba =
-    activeTab === 'monitorados' ? produtosMonitorados : produtosPausados;
 
   useEffect(() => {
     if (execucaoStatus !== 'pendente') return;
@@ -523,448 +574,492 @@ export function RadarOfertas() {
   return (
     <main className="radar-root">
       <div className="radar-container">
-        {/* 1. Cabeçalho & Botão de Ação Imediata */}
-        <section className="radar-header-card">
-          <span className="radar-location-pill">
-            <MapPin size={14} />
-            Spazio Trevile • Taubaté/SP
-          </span>
-
-          <h1 className="radar-title">
-            Radar de Ofertas — Spazio Trevile (Taubaté/SP)
-          </h1>
-
-          <button
-            type="button"
-            className="radar-primary-btn"
-            onClick={handleBuscarPromocoes}
-            disabled={submittingSearch || isBuscando || isCooldownLocked}
-          >
-            {submittingSearch || isBuscando ? (
-              <>
-                <Loader2 size={20} className="radar-spinner" />
-                Buscando Promoções...
-              </>
-            ) : isCooldownLocked ? (
-              `⏳ Próxima busca geral em ${formatRemainingTime(cooldownRemainingMs)}`
-            ) : (
-              '🔍 Buscar Promoções Agora'
-            )}
-          </button>
-
-          {(submittingSearch || isBuscando) && (
-            <div className="radar-status-banner radar-status-running" role="status">
-              <Loader2 size={18} className="radar-spinner" />
-              <span>Buscando ofertas no Tauste, Carrefour, Shibata e Nagumo...</span>
-            </div>
-          )}
-
-          {showSuccessBanner && !submittingSearch && !isBuscando && (
-            <div className="radar-status-banner radar-status-success" role="status">
-              <CheckCircle2 size={18} style={{ flexShrink: 0 }} />
-              <span>{successMessage}</span>
-            </div>
-          )}
-
-          {errorMsg && (
-            <div className="radar-status-banner radar-status-error" role="alert">
-              <span>{errorMsg}</span>
-            </div>
-          )}
-        </section>
-
-        {/* 2. Atalhos Rápidos: Delivery Até R$ 10 + Frete Grátis */}
-        <section className="radar-section">
-          <div className="radar-section-header">
-            <h2 className="radar-section-title">
-              Delivery Até R$ 10 + Frete Grátis
-            </h2>
-            <span className="radar-section-badge">1 Clique</span>
+        {/* Cabeçalho */}
+        <header className="radar-header-card">
+          <div className="radar-header-top">
+            <span className="radar-location-pill">
+              <MapPin size={14} />
+              Spazio Trevile • Taubaté/SP
+            </span>
+            <span className="radar-markets-pill">
+              Tauste • Carrefour • Shibata • Nagumo
+            </span>
           </div>
 
-          <div className="radar-delivery-grid">
-            {DELIVERY_SHORTCUTS.map((item) => (
-              <a
-                key={item.id}
-                href={item.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`radar-delivery-card ${item.brandClass}`}
+          <h1 className="radar-title">Radar de Ofertas</h1>
+
+          {/* Abas Principais: Supermercados vs Delivery */}
+          <div className="radar-main-tabs" role="tablist" aria-label="Categorias">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mainTab === 'supermercados'}
+              className={`radar-main-tab ${
+                mainTab === 'supermercados' ? 'is-active' : ''
+              }`}
+              onClick={() => setMainTab('supermercados')}
+            >
+              <Store size={17} />
+              Supermercados ({produtosVisiveis.length})
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mainTab === 'delivery'}
+              className={`radar-main-tab ${
+                mainTab === 'delivery' ? 'is-active' : ''
+              }`}
+              onClick={() => setMainTab('delivery')}
+            >
+              <Truck size={17} />
+              Delivery ({DELIVERY_SHORTCUTS.length})
+            </button>
+          </div>
+        </header>
+
+        {/* ABA 1: SUPERMERCADOS */}
+        {mainTab === 'supermercados' && (
+          <section className="radar-section">
+            {/* Ação principal + resumo */}
+            <div className="radar-toolbar-card">
+              <button
+                type="button"
+                className="radar-primary-btn"
+                onClick={handleBuscarPromocoes}
+                disabled={submittingSearch || isBuscando || isCooldownLocked}
               >
-                <div className="radar-delivery-top">
-                  <span className="radar-delivery-name">{item.title}</span>
-                  <ExternalLink size={16} style={{ flexShrink: 0, opacity: 0.85 }} />
+                {submittingSearch || isBuscando ? (
+                  <>
+                    <Loader2 size={19} className="radar-spinner" />
+                    Buscando nos 4 mercados...
+                  </>
+                ) : isCooldownLocked ? (
+                  `⏳ Próxima busca geral em ${formatRemainingTime(cooldownRemainingMs)}`
+                ) : (
+                  '🔍 Buscar Promoções Agora'
+                )}
+              </button>
+
+              {(submittingSearch || isBuscando) && (
+                <div className="radar-status-banner radar-status-running" role="status">
+                  <Loader2 size={18} className="radar-spinner" />
+                  <span>Consultando Tauste, Carrefour, Shibata e Nagumo...</span>
                 </div>
-                <span className="radar-delivery-sub">{item.subtitle}</span>
-              </a>
-            ))}
-          </div>
-        </section>
+              )}
 
-        {/* 3. Lista de Mercado Monitorada (Tauste, Carrefour, Shibata & Nagumo) */}
-        <section className="radar-section">
-          <div className="radar-section-header">
-            <h2 className="radar-section-title">
-              Lista Monitorada (Tauste, Carrefour, Shibata &amp; Nagumo)
-            </h2>
-            <span className="radar-section-badge">Meta: &gt;50% OFF</span>
-          </div>
+              {showSuccessBanner && !submittingSearch && !isBuscando && (
+                <div className="radar-status-banner radar-status-success" role="status">
+                  <CheckCircle2 size={18} style={{ flexShrink: 0 }} />
+                  <span>{successMessage}</span>
+                </div>
+              )}
 
-          {/* Pré-Lista Inteligente: Top 10 Melhores Ofertas */}
-          <div className="radar-prelist-card">
-            <div className="radar-prelist-header">
-              <div className="radar-prelist-title-wrap">
-                <Flame size={17} className="radar-prelist-flame" />
-                <h3 className="radar-prelist-title">
-                  🔥 Top 10 Melhores Ofertas (Pré-Lista)
-                </h3>
+              {errorMsg && (
+                <div className="radar-status-banner radar-status-error" role="alert">
+                  <span>{errorMsg}</span>
+                </div>
+              )}
+
+              {/* Resumo rápido de promoções */}
+              <div className="radar-stats-row">
+                <div className="radar-stat-chip">
+                  <Flame size={15} className="radar-stat-icon-hot" />
+                  <span>
+                    <strong>{resumoPromocoes.totalEmPromocao}</strong> em promoção
+                  </span>
+                </div>
+                {resumoPromocoes.maiorDesconto > 0 && (
+                  <div className="radar-stat-chip">
+                    <span>
+                      Maior desconto: <strong>{resumoPromocoes.maiorDesconto}% OFF</strong>
+                    </span>
+                  </div>
+                )}
               </div>
-              <span className="radar-suggestions-hint">
-                Maior % de desconto
-              </span>
             </div>
 
-            {top10PreLista.length === 0 ? (
-              <p className="radar-prelist-empty">
-                Rode uma busca para preencher automaticamente os 10 itens com maior desconto.
-              </p>
-            ) : (
-              <div className="radar-prelist-items">
-                {top10PreLista.map(({ item, desconto }, idx) => {
-                  const monitorado = isProdutoMonitorado(item);
-                  const nome = getProdutoNome(item);
-                  const mercado =
-                    item.mercado_vencedor ||
-                    item.mercado ||
-                    item.supermercado ||
-                    item.loja ||
-                    null;
+            {/* Controles de visualização: Visíveis vs Ocultos + Só Promoções + Adicionar */}
+            <div className="radar-controls-bar">
+              <div className="radar-subtabs" role="tablist" aria-label="Exibição">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={visibilityFilter === 'visiveis'}
+                  className={`radar-subtab ${
+                    visibilityFilter === 'visiveis' ? 'is-active' : ''
+                  }`}
+                  onClick={() => setVisibilityFilter('visiveis')}
+                >
+                  <Eye size={14} />
+                  Exibindo ({produtosVisiveis.length})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={visibilityFilter === 'ocultos'}
+                  className={`radar-subtab ${
+                    visibilityFilter === 'ocultos' ? 'is-active' : ''
+                  }`}
+                  onClick={() => setVisibilityFilter('ocultos')}
+                >
+                  <EyeOff size={14} />
+                  Ocultos ({produtosOcultos.length})
+                </button>
+              </div>
 
-                  return (
-                    <div key={item.id} className="radar-prelist-row">
-                      <div className="radar-prelist-info">
-                        <span className="radar-prelist-rank">#{idx + 1}</span>
-                        <div className="radar-prelist-meta">
-                          <span className="radar-prelist-name">{nome}</span>
-                          <span className="radar-prelist-sub">
-                            {item.menor_preco_encontrado != null
-                              ? formatBRL(Number(item.menor_preco_encontrado))
-                              : '—'}
-                            {mercado ? ` • ${mercado}` : ''} •{' '}
-                            <strong>{Math.round(desconto)}% OFF</strong>
-                          </span>
-                        </div>
-                      </div>
+              <div className="radar-controls-right">
+                <button
+                  type="button"
+                  className={`radar-filter-pill ${onlyPromocoes ? 'is-active' : ''}`}
+                  onClick={() => setOnlyPromocoes((prev) => !prev)}
+                >
+                  <Flame size={14} />
+                  Só promoções
+                </button>
 
+                <button
+                  type="button"
+                  className="radar-toggle-add-btn"
+                  onClick={() => setShowAddForm((prev) => !prev)}
+                >
+                  <Plus size={15} />
+                  Produto
+                  {showAddForm ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                </button>
+              </div>
+            </div>
+
+            {/* Formulário colapsável de adicionar produto */}
+            {showAddForm && (
+              <div className="radar-add-panel">
+                <div className="radar-suggestions-header">
+                  <span className="radar-suggestions-title">Sugestões rápidas</span>
+                  <span className="radar-suggestions-hint">1 clique para adicionar</span>
+                </div>
+                <div className="radar-suggestions-grid">
+                  {SUGESTOES_PRODUTOS.map((sug) => {
+                    const jaNaLista = nomesNaLista.has(normalizeKey(sug.nome));
+                    const isAddingThis = addingSugestao === sug.nome;
+                    return (
                       <button
+                        key={sug.nome}
                         type="button"
-                        className={`radar-prelist-toggle ${
-                          monitorado ? 'is-active' : 'is-paused'
+                        className={`radar-suggestion-chip ${
+                          jaNaLista ? 'is-added' : ''
                         }`}
-                        disabled={togglingMonitorId === item.id}
-                        onClick={() => void handleToggleMonitorado(item)}
+                        disabled={jaNaLista || isAddingThis}
+                        onClick={() => void handleAddSugestao(sug)}
                       >
-                        {monitorado ? 'Monitorando' : 'Não Monitorar'}
+                        <span>
+                          {jaNaLista ? '✓ ' : isAddingThis ? '... ' : '+ '}
+                          {sug.nome}
+                        </span>
+                        <span className="radar-suggestion-price">
+                          {formatBRL(sug.preco)}
+                        </span>
                       </button>
+                    );
+                  })}
+                </div>
+
+                <form className="radar-form-card" onSubmit={handleAddProduto}>
+                  <div className="radar-form-row">
+                    <div className="radar-field">
+                      <label htmlFor="radar-nome" className="radar-label">
+                        Nome do Produto
+                      </label>
+                      <input
+                        id="radar-nome"
+                        type="text"
+                        className="radar-input"
+                        placeholder="Ex: Café Pilão 500g"
+                        value={novoNome}
+                        onChange={(e) => setNovoNome(e.target.value)}
+                        disabled={addingItem}
+                      />
                     </div>
-                  );
-                })}
+
+                    <div className="radar-field">
+                      <label htmlFor="radar-preco" className="radar-label">
+                        Preço Anterior / Ref. (R$)
+                      </label>
+                      <input
+                        id="radar-preco"
+                        type="text"
+                        inputMode="decimal"
+                        className="radar-input"
+                        placeholder="22.00"
+                        value={novoPreco}
+                        onChange={(e) => setNovoPreco(e.target.value)}
+                        disabled={addingItem}
+                      />
+                    </div>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="radar-add-btn"
+                    disabled={addingItem}
+                  >
+                    {addingItem ? (
+                      <>
+                        <Loader2 size={18} className="radar-spinner" />
+                        Adicionando...
+                      </>
+                    ) : (
+                      <>
+                        <Plus size={18} />
+                        Adicionar à Lista
+                      </>
+                    )}
+                  </button>
+                </form>
               </div>
             )}
-          </div>
 
-          <div className="radar-suggestions-card">
-            <div className="radar-suggestions-header">
-              <span className="radar-suggestions-title">
-                Adicionar rápido à lista
-              </span>
-              <span className="radar-suggestions-hint">1 clique</span>
-            </div>
-            <div className="radar-suggestions-grid">
-              {SUGESTOES_PRODUTOS.map((sug) => {
-                const jaNaLista = nomesNaLista.has(normalizeKey(sug.nome));
-                const isAddingThis = addingSugestao === sug.nome;
-                return (
-                  <button
-                    key={sug.nome}
-                    type="button"
-                    className={`radar-suggestion-chip ${
-                      jaNaLista ? 'is-added' : ''
-                    }`}
-                    disabled={jaNaLista || isAddingThis}
-                    onClick={() => void handleAddSugestao(sug)}
-                  >
-                    <span>
-                      {jaNaLista ? '✓ ' : isAddingThis ? '... ' : '+ '}
-                      {sug.nome}
-                    </span>
-                    <span className="radar-suggestion-price">
-                      {formatBRL(sug.preco)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <form className="radar-form-card" onSubmit={handleAddProduto}>
-            <div className="radar-form-row">
-              <div className="radar-field">
-                <label htmlFor="radar-nome" className="radar-label">
-                  Nome do Produto
-                </label>
-                <input
-                  id="radar-nome"
-                  type="text"
-                  className="radar-input"
-                  placeholder="Ex: Café Pilão 500g"
-                  value={novoNome}
-                  onChange={(e) => setNovoNome(e.target.value)}
-                  disabled={addingItem}
+            {/* Tabela / Lista de Preços e Evolução */}
+            {loadingProdutos ? (
+              <div className="radar-empty-state">
+                <Loader2
+                  size={22}
+                  className="radar-spinner"
+                  style={{ margin: '0 auto 8px', display: 'block' }}
                 />
+                Carregando produtos...
               </div>
-
-              <div className="radar-field">
-                <label htmlFor="radar-preco" className="radar-label">
-                  Preço Normal (R$)
-                </label>
-                <input
-                  id="radar-preco"
-                  type="text"
-                  inputMode="decimal"
-                  className="radar-input"
-                  placeholder="22.00"
-                  value={novoPreco}
-                  onChange={(e) => setNovoPreco(e.target.value)}
-                  disabled={addingItem}
+            ) : listaExibida.length === 0 ? (
+              <div className="radar-empty-state">
+                <ShoppingBasket
+                  size={26}
+                  style={{ margin: '0 auto 8px', display: 'block', color: '#94a3b8' }}
                 />
+                {onlyPromocoes
+                  ? 'Nenhum item com desconto encontrado neste filtro.'
+                  : visibilityFilter === 'visiveis'
+                    ? 'Nenhum produto exibido. Adicione um produto acima ou restaure da aba Ocultos.'
+                    : 'Nenhum produto oculto no momento.'}
               </div>
-            </div>
+            ) : (
+              <div className="radar-table-card">
+                <div className="radar-table-header">
+                  <span>Produto</span>
+                  <span>Preço Anterior</span>
+                  <span>Preço Atual</span>
+                  <span>Desconto</span>
+                  <span>Supermercado</span>
+                  <span className="radar-col-actions">Ações</span>
+                </div>
 
-            <button
-              type="submit"
-              className="radar-add-btn"
-              disabled={addingItem}
-            >
-              {addingItem ? (
-                <>
-                  <Loader2 size={18} className="radar-spinner" />
-                  Adicionando...
-                </>
-              ) : (
-                <>
-                  <Plus size={19} />
-                  Adicionar à Lista
-                </>
-              )}
-            </button>
-          </form>
+                <div className="radar-table-body">
+                  {listaExibida.map((item) => {
+                    const nome = getProdutoNome(item);
+                    const precoAnterior = getPrecoAnterior(item);
+                    const precoAtual =
+                      item.menor_preco_encontrado !== null &&
+                      item.menor_preco_encontrado !== undefined
+                        ? Number(item.menor_preco_encontrado)
+                        : null;
 
-          {/* Abas de Controle: Monitorados vs. Não Monitorados */}
-          <div className="radar-tabs" role="tablist" aria-label="Controle de monitoramento">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'monitorados'}
-              className={`radar-tab-btn ${
-                activeTab === 'monitorados' ? 'is-active' : ''
-              }`}
-              onClick={() => setActiveTab('monitorados')}
-            >
-              Monitorados (Ativos) ({produtosMonitorados.length})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'pausados'}
-              className={`radar-tab-btn ${
-                activeTab === 'pausados' ? 'is-active' : ''
-              }`}
-              onClick={() => setActiveTab('pausados')}
-            >
-              Não Monitorados (Pausados) ({produtosPausados.length})
-            </button>
-          </div>
+                    const { valor: descontoValor, percentual: descontoPct } =
+                      getDescontoInfo(item);
+                    const mercado = getMercadoNome(item);
+                    const visivel = isProdutoVisivel(item);
+                    const isPromocao = descontoValor !== null && descontoValor > 0;
+                    const isSuperOferta =
+                      Boolean(item.super_oferta) ||
+                      (descontoPct !== null && descontoPct >= 50);
+                    const isUpdatingThis = updatingIndividualId === item.id;
+                    const isTogglingThis = togglingId === item.id;
 
-          {loadingProdutos ? (
-            <div className="radar-empty-state">
-              <Loader2
-                size={22}
-                className="radar-spinner"
-                style={{ margin: '0 auto 8px', display: 'block' }}
-              />
-              Carregando lista monitorada...
-            </div>
-          ) : produtosDaAba.length === 0 ? (
-            <div className="radar-empty-state">
-              <ShoppingBasket
-                size={26}
-                style={{ margin: '0 auto 8px', display: 'block', color: '#94a3b8' }}
-              />
-              {activeTab === 'monitorados'
-                ? 'Nenhum produto ativo no monitoramento. Adicione itens acima ou reative itens pausados.'
-                : 'Nenhum produto pausado no momento.'}
-            </div>
-          ) : (
-            <div className="radar-products-list">
-              {produtosDaAba.map((item) => {
-                const nome = getProdutoNome(item);
-                const precoNormal = Number(item.preco_referencia || 0);
-                const menorPreco =
-                  item.menor_preco_encontrado !== null &&
-                  item.menor_preco_encontrado !== undefined
-                    ? Number(item.menor_preco_encontrado)
-                    : null;
-
-                const desconto = getDescontoPercent(item);
-                const isSuperOferta =
-                  Boolean(item.super_oferta) ||
-                  (desconto !== null && desconto >= 50);
-
-                const mercado =
-                  item.mercado_vencedor ||
-                  item.mercado ||
-                  item.supermercado ||
-                  item.loja ||
-                  null;
-
-                const monitorado = isProdutoMonitorado(item);
-                const isUpdatingThis = updatingIndividualId === item.id;
-                const isTogglingThis = togglingMonitorId === item.id;
-
-                return (
-                  <article
-                    key={item.id}
-                    className={`radar-product-card ${
-                      isSuperOferta ? 'is-super-oferta' : ''
-                    } ${!monitorado ? 'is-paused' : ''}`}
-                  >
-                    <div className="radar-product-top">
-                      <div>
-                        {(isSuperOferta || mercado) && (
-                          <div className="radar-product-badges">
-                            {isSuperOferta && (
-                              <span className="radar-super-badge">
-                                🔥 +50% OFF IMPERDÍVEL
-                              </span>
-                            )}
-                            {mercado && (
-                              <span className="radar-market-badge">{mercado}</span>
-                            )}
-                          </div>
-                        )}
-                        <h3 className="radar-product-name">{nome}</h3>
-                      </div>
-
-                      <button
-                        type="button"
-                        className="radar-delete-btn"
-                        aria-label={`Remover ${nome}`}
-                        onClick={() => void handleDeleteProduto(item.id)}
+                    return (
+                      <div
+                        key={item.id}
+                        className={`radar-table-row ${
+                          isSuperOferta
+                            ? 'is-super-oferta'
+                            : isPromocao
+                              ? 'is-promo'
+                              : ''
+                        }`}
                       >
-                        <Trash2 size={18} />
-                      </button>
-                    </div>
+                        {/* Produto */}
+                        <div className="radar-cell radar-cell-product">
+                          <span className="radar-cell-title">{nome}</span>
+                          {item.atualizado_em && (
+                            <span className="radar-cell-date">
+                              Atualizado em{' '}
+                              {new Date(item.atualizado_em).toLocaleDateString('pt-BR')}
+                            </span>
+                          )}
+                        </div>
 
-                    <div className="radar-prices-grid">
-                      <div className="radar-price-col">
-                        <span className="radar-price-label">Preço Normal</span>
-                        <span className="radar-price-normal">
-                          {formatBRL(precoNormal)}
-                        </span>
-                      </div>
-
-                      <div className="radar-price-col">
-                        <span className="radar-price-label">
-                          Menor Preço Encontrado
-                        </span>
-                        {menorPreco !== null ? (
-                          <span className="radar-price-found">
-                            {formatBRL(menorPreco)}
+                        {/* Preço Anterior */}
+                        <div className="radar-cell">
+                          <span className="radar-mobile-label">Preço Anterior</span>
+                          <span
+                            className={`radar-val-prev ${
+                              isPromocao ? 'is-crossed' : ''
+                            }`}
+                          >
+                            {formatBRL(precoAnterior)}
                           </span>
-                        ) : (
-                          <span className="radar-price-pending">
-                            Aguardando busca
-                          </span>
-                        )}
-                      </div>
-                    </div>
+                        </div>
 
-                    {desconto !== null && (
-                      <div className="radar-discount-row">
-                        <span
-                          className={`radar-discount-pill ${
-                            desconto >= 50 ? 'is-high' : ''
-                          }`}
-                        >
-                          {desconto > 0
-                            ? `${Math.round(desconto)}% de desconto`
-                            : 'Sem desconto no momento'}
-                        </span>
-                      </div>
-                    )}
+                        {/* Preço Atual */}
+                        <div className="radar-cell">
+                          <span className="radar-mobile-label">Preço Atual</span>
+                          {precoAtual !== null ? (
+                            <span
+                              className={`radar-val-current ${
+                                isPromocao ? 'is-lower' : ''
+                              }`}
+                            >
+                              {formatBRL(precoAtual)}
+                            </span>
+                          ) : (
+                            <span className="radar-val-pending">Aguardando busca</span>
+                          )}
+                        </div>
 
-                    <div className="radar-card-actions">
-                      {item.link_oferta && (
-                        <a
-                          href={item.link_oferta}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`radar-offer-link-btn ${
-                            isSuperOferta ? '' : 'radar-offer-link-secondary'
-                          }`}
-                        >
-                          Ver no Site
-                          <ExternalLink size={16} />
-                        </a>
-                      )}
+                        {/* Valor do Desconto & Evolução */}
+                        <div className="radar-cell">
+                          <span className="radar-mobile-label">Desconto</span>
+                          {descontoValor !== null && descontoPct !== null ? (
+                            descontoValor > 0 ? (
+                              <span
+                                className={`radar-discount-badge ${
+                                  isSuperOferta ? 'is-super' : 'is-save'
+                                }`}
+                              >
+                                <ArrowDownRight size={14} />
+                                -{formatBRL(descontoValor)} ({Math.round(descontoPct)}%)
+                              </span>
+                            ) : descontoValor < 0 ? (
+                              <span className="radar-discount-badge is-up">
+                                <ArrowUpRight size={14} />
+                                +{formatBRL(Math.abs(descontoValor))}
+                              </span>
+                            ) : (
+                              <span className="radar-discount-badge is-neutral">
+                                Sem alteração
+                              </span>
+                            )
+                          ) : (
+                            <span className="radar-val-pending">—</span>
+                          )}
+                        </div>
 
-                      {monitorado ? (
-                        <button
-                          type="button"
-                          className="radar-action-btn radar-pause-btn"
-                          disabled={isTogglingThis}
-                          onClick={() => void handleToggleMonitorado(item)}
-                        >
-                          <Pause size={15} />
-                          Pausar
-                        </button>
-                      ) : (
-                        <div className="radar-paused-actions">
+                        {/* Supermercado */}
+                        <div className="radar-cell">
+                          <span className="radar-mobile-label">Supermercado</span>
+                          {mercado ? (
+                            <div className="radar-market-wrap">
+                              <span className="radar-market-badge">{mercado}</span>
+                              {item.link_oferta && (
+                                <a
+                                  href={item.link_oferta}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="radar-link-mini"
+                                  title="Abrir oferta no site"
+                                >
+                                  Ver <ExternalLink size={12} />
+                                </a>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="radar-val-pending">—</span>
+                          )}
+                        </div>
+
+                        {/* Ações */}
+                        <div className="radar-cell radar-cell-actions">
+                          {!visivel && (
+                            <button
+                              type="button"
+                              className="radar-icon-btn radar-btn-refresh"
+                              title="Atualizar preço agora"
+                              disabled={isUpdatingThis}
+                              onClick={() => void handleAtualizarIndividual(item)}
+                            >
+                              {isUpdatingThis ? (
+                                <Loader2 size={15} className="radar-spinner" />
+                              ) : (
+                                <RefreshCw size={15} />
+                              )}
+                            </button>
+                          )}
+
                           <button
                             type="button"
-                            className="radar-action-btn radar-refresh-btn"
-                            disabled={isUpdatingThis}
-                            onClick={() => void handleAtualizarIndividual(item)}
+                            className={`radar-visibility-btn ${
+                              visivel ? 'is-hide' : 'is-show'
+                            }`}
+                            disabled={isTogglingThis}
+                            onClick={() => void handleToggleVisibilidade(item)}
                           >
-                            {isUpdatingThis ? (
-                              <Loader2 size={15} className="radar-spinner" />
+                            {visivel ? (
+                              <>
+                                <EyeOff size={14} />
+                                Ocultar
+                              </>
                             ) : (
-                              <RefreshCw size={15} />
+                              <>
+                                <Eye size={14} />
+                                Exibir
+                              </>
                             )}
-                            {isUpdatingThis
-                              ? 'Atualizando...'
-                              : '🔄 Atualizar Preço Agora'}
                           </button>
 
                           <button
                             type="button"
-                            className="radar-action-btn radar-resume-btn"
-                            disabled={isTogglingThis}
-                            onClick={() => void handleToggleMonitorado(item)}
+                            className="radar-icon-btn radar-btn-delete"
+                            title={`Excluir ${nome}`}
+                            aria-label={`Excluir ${nome}`}
+                            onClick={() => void handleDeleteProduto(item.id)}
                           >
-                            <Play size={15} />
-                            ▶️ Monitorar
+                            <Trash2 size={15} />
                           </button>
                         </div>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* ABA 2: DELIVERY */}
+        {mainTab === 'delivery' && (
+          <section className="radar-section">
+            <div className="radar-section-header">
+              <h2 className="radar-section-title">
+                Delivery Até R$ 10 + Frete Grátis
+              </h2>
+              <span className="radar-section-badge">Atalhos 1 Clique</span>
             </div>
-          )}
-        </section>
+
+            <div className="radar-delivery-grid">
+              {DELIVERY_SHORTCUTS.map((item) => (
+                <a
+                  key={item.id}
+                  href={item.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`radar-delivery-card ${item.brandClass}`}
+                >
+                  <div className="radar-delivery-top">
+                    <span className="radar-delivery-name">{item.title}</span>
+                    <ExternalLink size={16} style={{ flexShrink: 0, opacity: 0.85 }} />
+                  </div>
+                  <span className="radar-delivery-sub">{item.subtitle}</span>
+                </a>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </main>
   );

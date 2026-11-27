@@ -1,7 +1,8 @@
 -- 1. Evoluir a tabela de produtos
 ALTER TABLE radar_produtos
 ADD COLUMN IF NOT EXISTS monitorado BOOLEAN DEFAULT TRUE,
-ADD COLUMN IF NOT EXISTS pre_lista BOOLEAN DEFAULT FALSE;
+ADD COLUMN IF NOT EXISTS pre_lista BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS preco_anterior NUMERIC;
 
 -- 2. Permitir execução individual na fila (sem travar as 8h da busca geral)
 ALTER TABLE radar_execucoes
