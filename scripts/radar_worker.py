@@ -45,7 +45,7 @@ PACK_RE = re.compile(r"\b(\d+)\s*rolos?\b", re.I)
 PRICE_RE = re.compile(r"R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\s*/)")
 
 EXCLUSIONS = {
-    "leite": ["condensado", "creme de leite", "coco", "doce de leite", "achocolatado", "iogurte", "composto lacteo", "bebida lactea", "em po", "cafe com leite", "sachet", "sache", "cappuccino"],
+    "leite": ["condensado", "creme de leite", "coco", "doce de leite", "achocolatado", "iogurte", "composto lacteo", "bebida lactea", "em po", "cafe com leite", "sachet", "sache", "cappuccino", "fermentado", "activia", "yakult"],
     "arroz": ["tempero", "chips", "biscoito", "bolacha", "farinha", "vinagre", "arroz doce", "bebida"],
     "cafe": ["capsula", "cappuccino", "achocolatado", "filtro", "biscoito", "bala"],
     "azeite": ["sardinha", "atum", "molho", "tempero", "azeitona"],
@@ -53,6 +53,7 @@ EXCLUSIONS = {
     "acucar": ["adocante", "bala", "doce", "achocolatado"],
     "feijao": ["tempero", "caldo"],
     "frango": ["tempero", "caldo", "nuggets", "empanado", "salsicha", "mortadela", "hamburguer"],
+    "peito": ["asa", "coxa", "sobrecoxa", "coxinha", "pedacos"],
     "sabao": ["amaciante", "agua sanitaria"],
 }
 
@@ -63,6 +64,7 @@ def normalize_text(value: str) -> str:
         if unicodedata.category(c) != "Mn"
     )
     no_accents = re.sub(r"(\d),(\d)", r"\1.\2", no_accents)
+    no_accents = re.sub(r"\b1000\s*ml\b", "1l", no_accents)
     no_accents = re.sub(r"\b(\d+(?:\.\d+)?)\s*(litros?)\b", r"\1l", no_accents)
     no_accents = re.sub(r"\b(\d+(?:\.\d+)?)\s+(kg|g|ml|l)\b", r"\1\2", no_accents)
     return no_accents
@@ -89,9 +91,9 @@ def matches_product(title: str, query: str, price: float, ref: float = 0.0) -> b
         if not re.search(rf"(?<![\d.]){re.escape(sz)}\b", norm_title):
             return False
 
-    # Se a busca não especificou tamanho (ex: "leite zero lactose"), evita sachês/miniaturas (<100g ou <300ml)
+    # Se a busca não especificou tamanho (ex: "leite zero lactose"), evita sachês/miniaturas/itens em gramas (<300ml ou g)
     if not query_sizes and ref >= 5.0:
-        if re.search(r"\b(?:[1-9]\d?g|[1-2]\d{2}ml)\b", norm_title):
+        if re.search(r"\b\d+g\b", norm_title) or re.search(r"\b[1-4]\d{2}ml\b", norm_title):
             return False
 
     # 4. Quantidade de rolos (ex: "12 rolos")
