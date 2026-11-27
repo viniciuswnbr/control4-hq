@@ -1,13 +1,37 @@
 import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from playwright.sync_api import sync_playwright
 from supabase import create_client
 
-# Preencha com as credenciais do seu Supabase (via variáveis de ambiente ou padrão)
+
+def load_env_files():
+    """Carrega variáveis do .env local ou do _orchestrator/.env sem sobrescrever o ambiente."""
+    root_dir = Path(__file__).resolve().parent.parent
+    candidates = [
+        root_dir / ".env",
+        root_dir.parent / "_orchestrator" / ".env",
+    ]
+    for env_path in candidates:
+        if not env_path.is_file():
+            continue
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+load_env_files()
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://eyinimyrycqaafupkaaa.supabase.co")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "SUA_SERVICE_ROLE_KEY")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SECRET_KEY") or ""
 CEP_SPAZIO_TREVILE = "12070-000"  # Ajuste para o CEP exato da rua do Spazio Trevile
+
+if not SUPABASE_KEY:
+    raise RuntimeError("SUPABASE_KEY não encontrada no ambiente ou nos arquivos .env")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
