@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Clock,
   Cpu,
   Edit3,
   History,
@@ -37,6 +38,7 @@ import type {
   Agent,
   BoardroomSession,
   DepartmentId,
+  Mission,
   PeerReviewItem,
   ProjectContext,
 } from '../types/hq';
@@ -105,6 +107,61 @@ function compileFinalSpec(
   return lines.join('\n');
 }
 
+function findMissionForSession(
+  session: BoardroomSession,
+  missions: Mission[]
+): Mission | null {
+  const specText = (session.final_spec || session.proposal_text || '').trim();
+  const snippet = specText.slice(0, 140);
+
+  if (snippet) {
+    const exactOrSnippetMatch = missions.find((m) => {
+      const gen = (m.generated_spec || '').trim();
+      const raw = (m.raw_idea || '').trim();
+      return (
+        (gen && (gen === specText || gen.includes(snippet))) ||
+        (raw && raw.includes(snippet))
+      );
+    });
+    if (exactOrSnippetMatch) return exactOrSnippetMatch;
+  }
+
+  const dept = getDepartmentById(session.lead_department);
+  const sessionTime = new Date(
+    session.updated_at || session.created_at
+  ).getTime();
+
+  return (
+    missions.find((m) => {
+      if (!m.raw_idea?.includes(`[Boardroom • ${dept.shortName}]`)) {
+        return false;
+      }
+      const missionTime = new Date(m.created_at).getTime();
+      return Math.abs(missionTime - sessionTime) < 5 * 60 * 1000;
+    }) || null
+  );
+}
+
+function getMissionStatusMeta(mission: Mission | null): {
+  label: string;
+  className: string;
+} {
+  if (!mission) {
+    return { label: 'Disparada', className: 'exec-badge-unknown' };
+  }
+  switch (mission.status) {
+    case 'COMPLETED':
+      return { label: 'Executada', className: 'exec-badge-completed' };
+    case 'IN_IDE':
+      return { label: 'Na IDE (Copilot)', className: 'exec-badge-in-ide' };
+    case 'PENDING':
+    case 'DRAFTING':
+      return { label: 'Na fila (Bridge)', className: 'exec-badge-pending' };
+    case 'BACKLOG':
+      return { label: 'Backlog', className: 'exec-badge-unknown' };
+  }
+}
+
 export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     BOARDROOM_PROJECTS[0].id
@@ -122,6 +179,10 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
 
   const [approvedHistory, setApprovedHistory] = useState<BoardroomSession[]>(
     []
+  );
+  const [projectMissions, setProjectMissions] = useState<Mission[]>([]);
+  const [confirmingMissionId, setConfirmingMissionId] = useState<string | null>(
+    null
   );
   const [historyOpen, setHistoryOpen] = useState<boolean>(false);
   const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(
@@ -190,7 +251,7 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
     setLoadingSession(true);
     setErrorMessage(null);
 
-    const [draftRes, approvedRes] = await Promise.all([
+    const [draftRes, approvedRes, missionsRes] = await Promise.all([
       supabase
         .from('hq_boardroom_sessions')
         .select('*')
@@ -205,6 +266,12 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
         .eq('status', 'approved')
         .order('updated_at', { ascending: false })
         .limit(15),
+      supabase
+        .from('missions')
+        .select('*')
+        .eq('agent_id', selectedProject.agentId)
+        .order('created_at', { ascending: false })
+        .limit(30),
     ]);
 
     if (draftRes.error) {
@@ -236,8 +303,12 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
       setApprovedHistory(approvedRes.data as BoardroomSession[]);
     }
 
+    if (!missionsRes.error && missionsRes.data) {
+      setProjectMissions(missionsRes.data as Mission[]);
+    }
+
     setLoadingSession(false);
-  }, [selectedProjectId]);
+  }, [selectedProject.agentId, selectedProjectId]);
 
   const loadProjectContext = useCallback(async (): Promise<ProjectContext | null> => {
     setLoadingContext(true);
@@ -261,6 +332,36 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
     void loadBoardroomData();
     void loadProjectContext();
   }, [loadBoardroomData, loadProjectContext]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel(`boardroom-missions-${selectedProject.agentId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'missions',
+          filter: `agent_id=eq.${selectedProject.agentId}`,
+        },
+        async () => {
+          const { data } = await supabase
+            .from('missions')
+            .select('*')
+            .eq('agent_id', selectedProject.agentId)
+            .order('created_at', { ascending: false })
+            .limit(30);
+          if (data) {
+            setProjectMissions(data as Mission[]);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [selectedProject.agentId]);
 
   const fetchFreshRepoSummary = async (): Promise<string | null> => {
     const { data } = await supabase
@@ -642,6 +743,58 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
     } finally {
       setApprovingMission(false);
     }
+  };
+
+  const handleConfirmMissionExecution = async (mission: Mission) => {
+    if (confirmingMissionId) return;
+    setConfirmingMissionId(mission.id);
+    setErrorMessage(null);
+
+    const completedAt = new Date().toISOString();
+    const { error: missionErr } = await supabase
+      .from('missions')
+      .update({
+        status: 'COMPLETED',
+        completed_at: completedAt,
+      })
+      .eq('id', mission.id);
+
+    if (missionErr) {
+      setConfirmingMissionId(null);
+      setErrorMessage(
+        `Erro ao confirmar execução da missão: ${missionErr.message}`
+      );
+      return;
+    }
+
+    await Promise.all([
+      supabase
+        .from('agents')
+        .update({
+          status: 'LOUNGE',
+          current_task_summary: 'Execução confirmada via Boardroom',
+        })
+        .eq('id', mission.agent_id),
+      supabase.from('execution_logs').insert({
+        agent_id: mission.agent_id,
+        source: 'BOARDROOM',
+        level: 'SUCCESS',
+        message: `Execução confirmada no Histórico do Boardroom${
+          mission.spec_filename ? ` (${mission.spec_filename})` : ''
+        }.`,
+      }),
+    ]);
+
+    setProjectMissions((prev) =>
+      prev.map((m) =>
+        m.id === mission.id
+          ? { ...m, status: 'COMPLETED', completed_at: completedAt }
+          : m
+      )
+    );
+    setConfirmingMissionId(null);
+    setStatusFeedback('Execução confirmada e registrada como concluída.');
+    onMissionCreated?.();
   };
 
   const handleDiscardDraft = async () => {
@@ -1176,38 +1329,104 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
                 const dateLabel = new Date(
                   item.updated_at || item.created_at
                 ).toLocaleString('pt-BR');
+                const linkedMission = findMissionForSession(
+                  item,
+                  projectMissions
+                );
+                const statusMeta = getMissionStatusMeta(linkedMission);
+                const canConfirm =
+                  linkedMission !== null &&
+                  linkedMission.status !== 'COMPLETED';
+                const isConfirming =
+                  linkedMission !== null &&
+                  confirmingMissionId === linkedMission.id;
 
                 return (
                   <div key={item.id} className="history-item">
-                    <button
-                      type="button"
-                      className="history-item-header"
-                      onClick={() =>
-                        setExpandedHistoryId(isExpanded ? null : item.id)
-                      }
-                    >
-                      <div className="history-item-meta">
-                        <span
-                          className="dept-lead-pill"
-                          style={{
-                            color: dept.accentColor,
-                            borderColor: dept.accentBorder,
-                          }}
+                    <div className="history-item-row">
+                      <button
+                        type="button"
+                        className="history-item-header"
+                        onClick={() =>
+                          setExpandedHistoryId(isExpanded ? null : item.id)
+                        }
+                      >
+                        <div className="history-item-meta">
+                          <span
+                            className="dept-lead-pill"
+                            style={{
+                              color: dept.accentColor,
+                              borderColor: dept.accentBorder,
+                            }}
+                          >
+                            {dept.name}
+                          </span>
+                          <span
+                            className={`exec-status-badge ${statusMeta.className}`}
+                          >
+                            {linkedMission?.status === 'COMPLETED' ? (
+                              <Check size={12} />
+                            ) : (
+                              <Clock size={12} />
+                            )}
+                            {statusMeta.label}
+                          </span>
+                          <span className="history-item-focus">
+                            {item.focus_context ||
+                              'Sessão executiva sem direcionamento específico'}
+                          </span>
+                        </div>
+                        <span className="history-item-date">{dateLabel}</span>
+                      </button>
+
+                      {canConfirm && linkedMission && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-confirm-exec"
+                          disabled={isConfirming}
+                          onClick={() =>
+                            void handleConfirmMissionExecution(linkedMission)
+                          }
+                          title="Confirmar que esta diretriz já foi executada"
                         >
-                          {dept.name}
-                        </span>
-                        <span className="history-item-focus">
-                          {item.focus_context ||
-                            'Sessão executiva sem direcionamento específico'}
-                        </span>
-                      </div>
-                      <span className="history-item-date">{dateLabel}</span>
-                    </button>
+                          {isConfirming ? (
+                            <Loader2 size={13} className="spin-icon" />
+                          ) : (
+                            <Check size={13} />
+                          )}
+                          Confirmar Execução
+                        </button>
+                      )}
+                    </div>
 
                     {isExpanded && (
-                      <pre className="history-item-spec">
-                        {item.final_spec || item.proposal_text}
-                      </pre>
+                      <>
+                        {linkedMission && (
+                          <div className="history-item-exec-bar">
+                            <span>
+                              <strong>Status da Missão:</strong>{' '}
+                              {statusMeta.label}
+                            </span>
+                            {linkedMission.spec_filename && (
+                              <span>
+                                <strong>Arquivo:</strong>{' '}
+                                <code>specs/{linkedMission.spec_filename}</code>
+                              </span>
+                            )}
+                            {linkedMission.completed_at && (
+                              <span>
+                                <strong>Concluída em:</strong>{' '}
+                                {new Date(
+                                  linkedMission.completed_at
+                                ).toLocaleString('pt-BR')}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <pre className="history-item-spec">
+                          {item.final_spec || item.proposal_text}
+                        </pre>
+                      </>
                     )}
                   </div>
                 );
