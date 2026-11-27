@@ -12,6 +12,7 @@ import {
   Megaphone,
   Palette,
   PenTool,
+  RefreshCw,
   Rocket,
   Save,
   Sparkles,
@@ -37,7 +38,15 @@ import type {
   BoardroomSession,
   DepartmentId,
   PeerReviewItem,
+  ProjectContext,
 } from '../types/hq';
+
+function formatContextDate(isoDate: string): string {
+  const date = new Date(isoDate);
+  if (Number.isNaN(date.getTime())) return '--/-- --:--';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 interface BoardroomTabProps {
   agents: Agent[];
@@ -135,6 +144,13 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusFeedback, setStatusFeedback] = useState<string | null>(null);
 
+  // Repomix real code context state
+  const [projectContext, setProjectContext] = useState<ProjectContext | null>(
+    null
+  );
+  const [loadingContext, setLoadingContext] = useState<boolean>(false);
+  const [syncingRepomix, setSyncingRepomix] = useState<boolean>(false);
+
   const selectedProject = useMemo(
     () =>
       BOARDROOM_PROJECTS.find((p) => p.id === selectedProjectId) ||
@@ -223,9 +239,82 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
     setLoadingSession(false);
   }, [selectedProjectId]);
 
+  const loadProjectContext = useCallback(async (): Promise<ProjectContext | null> => {
+    setLoadingContext(true);
+    const { data, error } = await supabase
+      .from('hq_project_contexts')
+      .select('project_id, repo_summary, token_count, updated_at')
+      .eq('project_id', selectedProjectId)
+      .maybeSingle();
+
+    setLoadingContext(false);
+    if (!error && data) {
+      const ctx = data as ProjectContext;
+      setProjectContext(ctx);
+      return ctx;
+    }
+    setProjectContext(null);
+    return null;
+  }, [selectedProjectId]);
+
   useEffect(() => {
     void loadBoardroomData();
-  }, [loadBoardroomData]);
+    void loadProjectContext();
+  }, [loadBoardroomData, loadProjectContext]);
+
+  const fetchFreshRepoSummary = async (): Promise<string | null> => {
+    const { data } = await supabase
+      .from('hq_project_contexts')
+      .select('repo_summary')
+      .eq('project_id', selectedProjectId)
+      .maybeSingle();
+    const fresh = (data as { repo_summary?: string } | null)?.repo_summary;
+    return fresh || projectContext?.repo_summary || null;
+  };
+
+  const handleSyncRepomix = async () => {
+    if (syncingRepomix) return;
+    setErrorMessage(null);
+    setStatusFeedback(null);
+    setSyncingRepomix(true);
+
+    const previousUpdatedAt = projectContext?.updated_at || null;
+
+    const { error } = await supabase.from('missions').insert({
+      agent_id: selectedProject.agentId,
+      task_type: 'FEATURE',
+      raw_idea: `[SYNC_REPOMIX] ${selectedProjectId}`,
+      status: 'PENDING',
+    });
+
+    if (error) {
+      setSyncingRepomix(false);
+      setErrorMessage(`Falha ao solicitar indexação Repomix: ${error.message}`);
+      return;
+    }
+
+    setStatusFeedback(
+      `Indexação Repomix solicitada para ${selectedProjectId}. Aguardando shev-bridge.py...`
+    );
+
+    let attempts = 0;
+    const pollTimer = window.setInterval(async () => {
+      attempts += 1;
+      const updated = await loadProjectContext();
+      if (
+        (updated && updated.updated_at !== previousUpdatedAt) ||
+        attempts >= 12
+      ) {
+        window.clearInterval(pollTimer);
+        setSyncingRepomix(false);
+        if (updated && updated.updated_at !== previousUpdatedAt) {
+          setStatusFeedback(
+            `Contexto Repomix de ${selectedProjectId} atualizado (~${updated.token_count.toLocaleString('pt-BR')} tokens).`
+          );
+        }
+      }
+    }, 3000);
+  };
 
   const handleSummonDepartment = async (deptId: DepartmentId) => {
     setErrorMessage(null);
@@ -233,11 +322,13 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
     setGeneratingDept(deptId);
 
     try {
+      const repoSummary = await fetchFreshRepoSummary();
       const { text: proposal, model: usedModel } = await runBoardroomPropose({
         projectId: selectedProjectId,
         department: deptId,
         focusContext,
         projectSummary,
+        repoSummary,
       });
 
       const now = new Date().toISOString();
@@ -360,12 +451,14 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
         }
       }
 
+      const repoSummary = await fetchFreshRepoSummary();
       const results = await runBoardroomPeerReview({
         projectId: selectedProjectId,
         leadDepartment: activeSession.lead_department,
         currentProposal: proposalDraft,
         reviewingDepartments: selectedReviewDepts,
         projectSummary,
+        repoSummary,
       });
 
       const now = new Date().toISOString();
@@ -582,25 +675,73 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
             </p>
           </div>
 
-          <div className="boardroom-project-picker">
-            <label htmlFor="boardroom-project-select">Projeto Alvo:</label>
-            <select
-              id="boardroom-project-select"
-              className="project-select"
-              value={selectedProjectId}
-              onChange={(e) => {
-                setSelectedProjectId(e.target.value);
-                setFocusContext('');
-                setStatusFeedback(null);
-                setErrorMessage(null);
-              }}
-            >
-              {BOARDROOM_PROJECTS.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.label}
-                </option>
-              ))}
-            </select>
+          <div className="boardroom-project-controls">
+            <div className="boardroom-project-picker">
+              <label htmlFor="boardroom-project-select">Projeto Alvo:</label>
+              <select
+                id="boardroom-project-select"
+                className="project-select"
+                value={selectedProjectId}
+                onChange={(e) => {
+                  setSelectedProjectId(e.target.value);
+                  setFocusContext('');
+                  setStatusFeedback(null);
+                  setErrorMessage(null);
+                }}
+              >
+                {BOARDROOM_PROJECTS.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="repomix-context-bar">
+              {loadingContext ? (
+                <span className="repomix-badge repomix-badge-empty">
+                  <Loader2 size={12} className="spin" /> Verificando snapshot...
+                </span>
+              ) : projectContext ? (
+                <>
+                  <span className="repomix-badge repomix-badge-active">
+                    Contexto Real Ativo (~
+                    {projectContext.token_count.toLocaleString('pt-BR')} tokens •
+                    Atualizado em {formatContextDate(projectContext.updated_at)})
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-ghost repomix-sync-btn"
+                    disabled={syncingRepomix}
+                    onClick={() => void handleSyncRepomix()}
+                  >
+                    <RefreshCw
+                      size={12}
+                      className={syncingRepomix ? 'spin' : undefined}
+                    />
+                    {syncingRepomix
+                      ? 'Atualizando...'
+                      : 'Atualizar Código (Repomix)'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="repomix-badge repomix-badge-empty repomix-badge-clickable"
+                  disabled={syncingRepomix}
+                  onClick={() => void handleSyncRepomix()}
+                >
+                  {syncingRepomix ? (
+                    <>
+                      <Loader2 size={12} className="spin" /> Indexando via
+                      Repomix...
+                    </>
+                  ) : (
+                    'Sem snapshot de código (Clique para indexar via Repomix)'
+                  )}
+                </button>
+              )}
+            </div>
           </div>
         </div>
 

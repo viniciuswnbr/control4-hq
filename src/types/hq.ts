@@ -88,3 +88,10 @@ export interface BoardroomSession {
   created_at: string;
   updated_at?: string | null;
 }
+
+export interface ProjectContext {
+  project_id: string;
+  repo_summary: string;
+  token_count: number;
+  updated_at: string;
+}

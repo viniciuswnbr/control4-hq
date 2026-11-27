@@ -790,10 +790,68 @@ header {
   max-width: 720px;
 }
 
+.boardroom-project-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
 .boardroom-project-picker {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.repomix-context-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.repomix-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.repomix-badge-active {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.repomix-badge-empty {
+  background: rgba(245, 158, 11, 0.1);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.repomix-badge-clickable {
+  cursor: pointer;
+  transition: 0.15s ease;
+}
+
+.repomix-badge-clickable:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
+.repomix-badge-clickable:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.repomix-sync-btn {
+  font-size: 0.74rem;
+  padding: 4px 10px;
 }
 
 .boardroom-project-picker label {

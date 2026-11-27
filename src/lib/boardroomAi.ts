@@ -18,6 +18,7 @@ export interface ProposeInput {
   department: DepartmentId;
   focusContext: string;
   projectSummary: string;
+  repoSummary?: string | null;
 }
 
 export interface ProposeResult {
@@ -31,6 +32,7 @@ export interface PeerReviewInput {
   currentProposal: string;
   reviewingDepartments: DepartmentId[];
   projectSummary?: string;
+  repoSummary?: string | null;
 }
 
 export interface PeerReviewResult {
@@ -135,13 +137,17 @@ export async function runBoardroomPropose(
     ? input.focusContext.trim()
     : 'Nenhum direcionamento específico informado. Foque na alavanca de maior retorno imediato para este projeto.';
 
+  const codeBaseBlock = input.repoSummary?.trim()
+    ? `\n\nBASE DE CÓDIGO REAL DO PROJETO (Gerada via Repomix):\n${input.repoSummary.trim()}\n\nINSTRUÇÃO DE GROUNDING NO CÓDIGO: Cite arquivos reais, componentes, rotas, funções e estruturas existentes listados acima ao elaborar seu diagnóstico e ao propor o próximo passo.`
+    : '';
+
   const userPrompt = `PROJETO ALVO: ${input.projectId}
 
 CONTEXTO DO PROJETO:
 ${input.projectSummary}
 
 DIRECIONAMENTO DA REUNIÃO:
-${focusBlock}
+${focusBlock}${codeBaseBlock}
 
 Elabore sua proposta executiva completa seguindo rigorosamente as 4 seções obrigatórias.`;
 
@@ -152,6 +158,9 @@ export async function runBoardroomPeerReview(
   input: PeerReviewInput
 ): Promise<PeerReviewResult[]> {
   const leadDept = getDepartmentById(input.leadDepartment);
+  const codeBaseBlock = input.repoSummary?.trim()
+    ? `\nBASE DE CÓDIGO REAL DO PROJETO (Gerada via Repomix):\n${input.repoSummary.trim()}\n\nINSTRUÇÃO DE GROUNDING NO CÓDIGO: Cite arquivos reais, componentes e estruturas existentes no projeto ao emitir seu parecer e ajuste recomendado.\n`
+    : '';
 
   const tasks = input.reviewingDepartments.map(async (reviewDeptId) => {
     const reviewer = getDepartmentById(reviewDeptId);
@@ -165,7 +174,7 @@ Seja objetivo, construtivo, direto e sem repetir o que já está bom. Responda e
 - **Ajuste Recomendado:** (1 ação prática para incorporar na especificação técnica final)`;
 
     const userPrompt = `PROJETO ALVO: ${input.projectId}
-${input.projectSummary ? `CONTEXTO DO PROJETO: ${input.projectSummary}\n` : ''}
+${input.projectSummary ? `CONTEXTO DO PROJETO: ${input.projectSummary}\n` : ''}${codeBaseBlock}
 PROPOSTA ATUAL (${leadDept.name}):
 """
 ${input.currentProposal}
