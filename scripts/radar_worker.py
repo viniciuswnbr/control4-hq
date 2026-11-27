@@ -28,7 +28,7 @@ load_env_files()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://eyinimyrycqaafupkaaa.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SECRET_KEY") or ""
-CEP_SPAZIO_TREVILE = "12070-000"  # Ajuste para o CEP exato da rua do Spazio Trevile
+CEP_SPAZIO_TREVILE = "12040-720"  # CEP do Spazio Trevile (Taubaté/SP)
 
 if not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_KEY não encontrada no ambiente ou nos arquivos .env")

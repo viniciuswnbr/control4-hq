@@ -209,7 +209,7 @@ export function RadarOfertas() {
     setSubmittingSearch(false);
 
     if (error) {
-      setErrorMsg('Erro ao iniciar busca de promoções. Tente novamente.');
+      setErrorMsg(`Erro ao iniciar busca de promoções: ${error.message}`);
       return;
     }
 
