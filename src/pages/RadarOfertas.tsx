@@ -17,6 +17,7 @@ interface RadarExecucao {
   criado_em?: string | null;
   created_at?: string | null;
   atualizado_em?: string | null;
+  finalizado_em?: string | null;
 }
 
 interface RadarProduto {
@@ -27,6 +28,7 @@ interface RadarProduto {
   preco_referencia: number;
   menor_preco_encontrado?: number | null;
   super_oferta?: boolean | null;
+  mercado_vencedor?: string | null;
   mercado?: string | null;
   supermercado?: string | null;
   loja?: string | null;
@@ -448,7 +450,11 @@ export function RadarOfertas() {
                   (desconto !== null && desconto >= 50);
 
                 const mercado =
-                  item.mercado || item.supermercado || item.loja || null;
+                  item.mercado_vencedor ||
+                  item.mercado ||
+                  item.supermercado ||
+                  item.loja ||
+                  null;
 
                 return (
                   <article
