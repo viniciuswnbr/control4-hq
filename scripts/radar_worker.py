@@ -40,8 +40,21 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 STOP_WORDS = {
     "de", "da", "do", "das", "dos", "com", "sem", "para", "em", "e", "ou", "tipo", "rolos", "rolo"
 }
-SIZE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", re.I)
+SIZE_RE = re.compile(r"\b(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l|litros?)\b", re.I)
+PACK_RE = re.compile(r"\b(\d+)\s*rolos?\b", re.I)
 PRICE_RE = re.compile(r"R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})(?!\s*/)")
+
+EXCLUSIONS = {
+    "leite": ["condensado", "creme de leite", "coco", "doce de leite", "achocolatado", "iogurte", "composto lacteo", "bebida lactea", "em po", "cafe com leite", "sachet", "sache", "cappuccino"],
+    "arroz": ["tempero", "chips", "biscoito", "bolacha", "farinha", "vinagre", "arroz doce", "bebida"],
+    "cafe": ["capsula", "cappuccino", "achocolatado", "filtro", "biscoito", "bala"],
+    "azeite": ["sardinha", "atum", "molho", "tempero", "azeitona"],
+    "oleo": ["azeite", "corporal", "capilar", "motor"],
+    "acucar": ["adocante", "bala", "doce", "achocolatado"],
+    "feijao": ["tempero", "caldo"],
+    "frango": ["tempero", "caldo", "nuggets", "empanado", "salsicha", "mortadela", "hamburguer"],
+    "sabao": ["amaciante", "agua sanitaria"],
+}
 
 
 def normalize_text(value: str) -> str:
@@ -49,34 +62,63 @@ def normalize_text(value: str) -> str:
         c for c in unicodedata.normalize("NFD", value.lower())
         if unicodedata.category(c) != "Mn"
     )
-    # Normaliza espaços entre número e unidade: "5 kg" -> "5kg", "1,6 kg" -> "1.6kg"
     no_accents = re.sub(r"(\d),(\d)", r"\1.\2", no_accents)
-    no_accents = re.sub(r"(\d+(?:\.\d+)?)\s+(kg|g|ml|l)\b", r"\1\2", no_accents)
+    no_accents = re.sub(r"\b(\d+(?:\.\d+)?)\s*(litros?)\b", r"\1l", no_accents)
+    no_accents = re.sub(r"\b(\d+(?:\.\d+)?)\s+(kg|g|ml|l)\b", r"\1\2", no_accents)
     return no_accents
 
 
-def matches_product(title: str, query: str) -> bool:
+def matches_product(title: str, query: str, price: float, ref: float = 0.0) -> bool:
     norm_title = normalize_text(title)
     norm_query = normalize_text(query)
 
-    # 1. Se a busca especifica peso/volume (ex: 5kg, 500g, 900ml, 1l), exige correspondência exata
-    query_sizes = [f"{m.group(1).replace(',', '.')}{m.group(2)}" for m in SIZE_RE.finditer(norm_query)]
+    # 1. Trava de sanidade de preço (evita miniatura/preço por 100g/erro >75% OFF)
+    if ref > 0 and price < ref * 0.25:
+        return False
+
+    # 2. Exclusões semânticas (ex: não aceitar "tempero para arroz" ao buscar "arroz")
+    for head, blocked_words in EXCLUSIONS.items():
+        if re.search(rf"\b{head}\b", norm_query):
+            for bw in blocked_words:
+                if bw not in norm_query and bw in norm_title:
+                    return False
+
+    # 3. Peso / volume exato com fronteira de palavra
+    query_sizes = [f"{m.group(1)}{m.group(2)}" for m in SIZE_RE.finditer(norm_query)]
     for sz in query_sizes:
-        if sz not in norm_title:
+        if not re.search(rf"(?<![\d.]){re.escape(sz)}\b", norm_title):
             return False
 
-    # 2. Exige que todas as palavras-chave principais da busca apareçam no título
+    # Se a busca não especificou tamanho (ex: "leite zero lactose"), evita sachês/miniaturas (<100g ou <300ml)
+    if not query_sizes and ref >= 5.0:
+        if re.search(r"\b(?:[1-9]\d?g|[1-2]\d{2}ml)\b", norm_title):
+            return False
+
+    # 4. Quantidade de rolos (ex: "12 rolos")
+    for m in PACK_RE.finditer(norm_query):
+        qty = m.group(1)
+        if not re.search(rf"(?<!\d){qty}(?:\s*(?:rolos?|un|unidades?)|(?=\s|$))", norm_title):
+            return False
+
+    # 5. Palavras-chave principais (com sinônimo "sabao em po" <-> "lava roupas po")
+    if "sabao" in norm_query and "po" in norm_query:
+        has_sabao_po = ("sabao" in norm_title and "po" in norm_title) or (
+            "lava" in norm_title and "roupas" in norm_title and "po" in norm_title
+        )
+        if not has_sabao_po:
+            return False
+        return True
+
     tokens = [
         t for t in re.split(r"[^a-z0-9.]+", norm_query)
-        if len(t) >= 2 and t not in STOP_WORDS and not SIZE_RE.fullmatch(t)
+        if len(t) >= 2 and t not in STOP_WORDS and not SIZE_RE.fullmatch(t) and not t.isdigit()
     ]
     if not tokens:
         return True
-    return all(tok in norm_title for tok in tokens)
+    return all(re.search(rf"\b{re.escape(tok)}", norm_title) for tok in tokens)
 
 
 def extract_best_price_from_text(text: str) -> float | None:
-    # Ignora preços unitários como "R$ 36,49/kg" graças ao lookahead negativo em PRICE_RE
     prices = []
     for m in PRICE_RE.finditer(text):
         raw = m.group(1).replace(".", "").replace(",", ".")
@@ -89,11 +131,13 @@ def extract_best_price_from_text(text: str) -> float | None:
     return min(prices) if prices else None
 
 
-def pick_best_candidate(candidates: list[tuple[str, float, str]], query: str) -> tuple[float, str] | None:
+def pick_best_candidate(
+    candidates: list[tuple[str, float, str]], query: str, ref: float = 0.0
+) -> tuple[float, str, str] | None:
     valid = []
     for title, price, link in candidates:
-        if matches_product(title, query):
-            valid.append((price, link))
+        if matches_product(title, query, price, ref):
+            valid.append((price, link, title))
     if not valid:
         return None
     return min(valid, key=lambda x: x[0])
@@ -109,7 +153,7 @@ def otimizar_pagina(page):
     )
 
 
-def buscar_carrefour(page, termo: str):
+def buscar_carrefour(page, termo: str, ref: float = 0.0):
     try:
         url = f"https://mercado.carrefour.com.br/busca/{urllib.parse.quote(termo)}"
         page.goto(url, timeout=15000, wait_until="domcontentloaded")
@@ -117,6 +161,7 @@ def buscar_carrefour(page, termo: str):
         cards = page.evaluate("""() => {
             return Array.from(document.querySelectorAll('a[href*="/produto/"]')).map(a => ({
                 href: a.getAttribute('href') || '',
+                title: (a.querySelector('h2, h3')?.innerText || a.innerText || '').replace(/\\s+/g, ' ').trim(),
                 text: (a.innerText || '').replace(/\\s+/g, ' ').trim()
             })).filter(c => c.text.includes('R$') && c.text.length < 300);
         }""")
@@ -125,25 +170,25 @@ def buscar_carrefour(page, termo: str):
             price = extract_best_price_from_text(c["text"])
             if price:
                 link = f"https://mercado.carrefour.com.br{c['href']}" if c["href"].startswith("/") else url
-                candidates.append((c["text"], price, link))
-        best = pick_best_candidate(candidates, termo)
+                candidates.append((c["title"], price, link))
+        best = pick_best_candidate(candidates, termo, ref)
         if best:
-            return best
+            return best[0], best[1], best[2]
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
-def buscar_tauste(page, termo: str):
+def buscar_tauste(page, termo: str, ref: float = 0.0):
     try:
         url = f"https://tauste.com.br/taubate/catalogsearch/result/?q={urllib.parse.quote_plus(termo)}"
         page.goto(url, timeout=15000, wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
         cards = page.evaluate("""() => {
             return Array.from(document.querySelectorAll('.product-item')).map(el => ({
-                title: (el.querySelector('.product-item-name')?.innerText || '').replace(/\\s+/g, ' ').trim(),
-                priceText: (el.querySelector('.price')?.innerText || '').replace(/\\s+/g, ' ').trim(),
-                href: el.querySelector('.product-item-link')?.getAttribute('href') || ''
+                title: (el.querySelector('.product-item-name a')?.innerText || '').replace(/\\s+/g, ' ').trim(),
+                priceText: (el.querySelector('[data-price-type="finalPrice"] .price, .price-box .price')?.innerText || '').replace(/\\s+/g, ' ').trim(),
+                href: el.querySelector('.product-item-name a')?.getAttribute('href') || ''
             })).filter(c => c.title && c.priceText);
         }""")
         candidates = []
@@ -151,59 +196,69 @@ def buscar_tauste(page, termo: str):
             price = extract_best_price_from_text(c["priceText"])
             if price:
                 candidates.append((c["title"], price, c["href"] or url))
-        best = pick_best_candidate(candidates, termo)
+        best = pick_best_candidate(candidates, termo, ref)
         if best:
-            return best
+            return best[0], best[1], best[2]
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
-def buscar_shibata(page, termo: str):
+def buscar_shibata(page, termo: str, ref: float = 0.0):
     try:
         url = f"https://www.loja.shibata.com.br/busca?termo={urllib.parse.quote(termo)}"
         page.goto(url, timeout=15000, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
-        lines = [l.strip() for l in page.locator("body").inner_text().splitlines() if l.strip()]
+        page.wait_for_timeout(2800)
+        cards = page.evaluate("""() => {
+            const res = [];
+            document.querySelectorAll('app-product-card, [class*="product-card"], [class*="card-product"], a[href*="/produto/"]').forEach(el => {
+                const txt = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                const a = el.tagName === 'A' ? el : el.querySelector('a[href]');
+                if (txt.includes('R$') && txt.length > 8 && txt.length < 280) {
+                    res.push({text: txt, href: a ? a.getAttribute('href') : ''});
+                }
+            });
+            return res;
+        }""")
         candidates = []
-        for idx, line in enumerate(lines):
-            if "R$" in line or len(line) < 6:
-                continue
-            window_text = " ".join(lines[idx : idx + 4])
-            if "R$" in window_text and len(window_text) < 240:
-                price = extract_best_price_from_text(window_text)
-                if price:
-                    candidates.append((line, price, url))
-        best = pick_best_candidate(candidates, termo)
+        for c in cards:
+            price = extract_best_price_from_text(c["text"])
+            if price:
+                href = c["href"]
+                link = f"https://www.loja.shibata.com.br{href}" if href.startswith("/") else (href or url)
+                candidates.append((c["text"], price, link))
+        best = pick_best_candidate(candidates, termo, ref)
         if best:
-            return best
+            return best[0], best[1], best[2]
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
-def buscar_nagumo(page, termo: str):
+def buscar_nagumo(page, termo: str, ref: float = 0.0):
     try:
         url = f"https://www.nagumo.com.br/busca?q={urllib.parse.quote_plus(termo)}"
         page.goto(url, timeout=15000, wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
-        # Extrai blocos do texto renderizado contendo título + R$ (ou Por: R$)
-        lines = [l.strip() for l in page.locator("body").inner_text().splitlines() if l.strip()]
+        page.wait_for_timeout(2200)
+        cards = page.evaluate("""() => {
+            return Array.from(document.querySelectorAll('.productCard')).map(el => ({
+                text: (el.innerText || '').replace(/\\s+/g, ' ').trim(),
+                href: el.querySelector('a[href]')?.getAttribute('href') || ''
+            })).filter(c => c.text.includes('R$') && !c.text.includes('Produto Indisponível'));
+        }""")
         candidates = []
-        for idx, line in enumerate(lines):
-            if "R$" in line or len(line) < 6:
-                continue
-            window_text = " ".join(lines[idx : idx + 5])
-            if "R$" in window_text and len(window_text) < 260:
-                price = extract_best_price_from_text(window_text)
-                if price:
-                    candidates.append((line, price, url))
-        best = pick_best_candidate(candidates, termo)
+        for c in cards:
+            price = extract_best_price_from_text(c["text"])
+            if price:
+                href = c["href"]
+                link = f"https://www.nagumo.com.br{href}" if href.startswith("/") else (href or url)
+                candidates.append((c["text"], price, link))
+        best = pick_best_candidate(candidates, termo, ref)
         if best:
-            return best
+            return best[0], best[1], best[2]
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
 def pode_rodar_geral() -> bool:
@@ -280,12 +335,15 @@ def processar_execucao(execucao: dict):
                         (buscar_shibata, "Shibata"),
                         (buscar_nagumo, "Nagumo"),
                     ]:
-                        preco, link = fn(page, nome)
+                        preco, link, matched_title = fn(page, nome, ref)
                         if preco and preco > 0:
-                            resultados.append((preco, mercado, link))
+                            resultados.append((preco, mercado, link, matched_title))
 
                     if resultados:
-                        menor_preco, mercado, link = min(resultados, key=lambda x: x[0])
+                        menor_preco, mercado, link, matched_title = min(
+                            resultados, key=lambda x: x[0]
+                        )
+                        print(f"  -> Vencedor: {mercado} | R$ {menor_preco:.2f} | {matched_title[:60]}")
                         desconto = ((ref - menor_preco) / ref) * 100 if ref > 0 else 0
                         super_oferta = desconto >= 50.0
 
