@@ -592,16 +592,29 @@ export function BoardroomTab({ agents, onMissionCreated }: BoardroomTabProps) {
       }
 
       const now = new Date().toISOString();
-      const { error: sessionError } = await supabase
+      const baseSessionUpdate = {
+        proposal_text: proposalDraft,
+        peer_reviews: peerReviews,
+        status: 'approved' as const,
+        updated_at: now,
+      };
+
+      let { error: sessionError } = await supabase
         .from('hq_boardroom_sessions')
         .update({
-          proposal_text: proposalDraft,
-          peer_reviews: peerReviews,
+          ...baseSessionUpdate,
           final_spec: finalSpec,
-          status: 'approved',
-          updated_at: now,
         })
         .eq('id', activeSession.id);
+
+      // Fallback caso a coluna final_spec ainda não exista no schema do Supabase
+      if (sessionError?.message?.includes('final_spec')) {
+        const retryRes = await supabase
+          .from('hq_boardroom_sessions')
+          .update(baseSessionUpdate)
+          .eq('id', activeSession.id);
+        sessionError = retryRes.error;
+      }
 
       if (sessionError) {
         throw new Error(
