@@ -85,23 +85,29 @@ export const BOARDROOM_PROJECTS: BoardroomProjectOption[] = [
   },
 ];
 
+export const BOARDROOM_BASE_OUTPUT_RULES = `
+DIRETRIZES RÍGIDAS DE SAÍDA (OBRIGATÓRIO):
+1. PROIBIDO gerar blocos de código (\`\`\`), scripts, comandos de terminal ou trechos literais de programação. Quem escreverá o código posteriormente será o agente executor na IDE.
+2. Estilo Executivo e Denso: Responda em Português (PT-BR), com linguagem direta, marcadores curtos e objetivos, sem introduções genéricas, saudações ou enrolação.
+3. NÃO invente métricas fictícias ou arquivos inexistentes como se fossem fatos; cite arquivos, fluxos ou módulos reais do contexto Repomix apenas pelo nome, sem código.
+`.trim();
+
 const MANDATORY_STRUCTURE_RULE = `
-REGRAS OBRIGATÓRIAS DE RESPOSTA:
-1. Responda em Português (PT-BR), de forma direta, executiva, técnica e sem enrolação.
-2. NÃO invente métricas fictícias ou arquivos inexistentes como se fossem fatos; quando propor algo novo, deixe explícito que é uma recomendação.
-3. Estruture sua resposta EXATAMENTE com estas 4 seções em Markdown:
+${BOARDROOM_BASE_OUTPUT_RULES}
+4. Limite de extensão: Mantenha a proposta principal entre 250 e 400 palavras no total.
+5. Estruture sua resposta EXATAMENTE com estas 4 seções em Markdown:
 
-### 1) Diagnóstico
-(Análise crítica do cenário atual do projeto sob a ótica da sua diretoria, identificando a principal oportunidade ou gargalo.)
+### 1) Diagnóstico & Oportunidade
+(Qual gargalo real ou alavanca foi identificada no projeto atual, citando arquivos, fluxos ou módulos reais do contexto Repomix apenas pelo nome, sem código.)
 
-### 2) Próximo Passo Acionável
-(Ação concreta e específica que pode ser implementada imediatamente no projeto, com escopo claro.)
+### 2) Ganhos & Impacto Esperado
+(Benefícios concretos em conversão, receita, velocidade, economia de recursos ou qualidade.)
 
-### 3) Exemplo Prático Aplicado ao Projeto
-(Exemplo concreto de implementação, fluxo, copy, arquitetura, componente ou processo aplicado diretamente ao contexto do projeto informado.)
+### 3) Orientação de Execução (Diretriz para o Copilot)
+(O que deve ser construído ou alterado, quais regras de negócio aplicar, critérios de aceite e cuidados técnicos/de UX para garantir qualidade na implementação.)
 
-### 4) Ganho / Impacto Esperado
-(Resultado mensurável esperado em receita, conversão, velocidade, retenção ou eficiência operacional.)
+### 4) Riscos & Pontos de Atenção
+(O que evitar durante a execução para não quebrar fluxos existentes ou gerar retrabalho.)
 `.trim();
 
 export const EXECUTIVE_DEPARTMENTS: DepartmentConfig[] = [
