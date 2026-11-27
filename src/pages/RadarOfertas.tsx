@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   CheckCircle2,
   ExternalLink,
+  Flame,
   Loader2,
   MapPin,
+  Pause,
+  Play,
   Plus,
+  RefreshCw,
   ShoppingBasket,
   Trash2,
 } from 'lucide-react';
@@ -14,6 +18,8 @@ import './RadarOfertas.css';
 interface RadarExecucao {
   id: string;
   status: string;
+  tipo?: string | null;
+  produto_id?: string | null;
   criado_em?: string | null;
   created_at?: string | null;
   atualizado_em?: string | null;
@@ -28,6 +34,8 @@ interface RadarProduto {
   preco_referencia: number;
   menor_preco_encontrado?: number | null;
   super_oferta?: boolean | null;
+  monitorado?: boolean | null;
+  pre_lista?: boolean | null;
   mercado_vencedor?: string | null;
   mercado?: string | null;
   supermercado?: string | null;
@@ -49,15 +57,6 @@ interface SugestaoProduto {
   preco: number;
 }
 
-interface BuscaApiResult {
-  id: string;
-  menor_preco_encontrado: number | null;
-  mercado_vencedor: string | null;
-  link_oferta: string | null;
-  super_oferta: boolean;
-  atualizado_em: string;
-}
-
 const SUGESTOES_PRODUTOS: SugestaoProduto[] = [
   { nome: 'Café Pilão 500g', preco: 22.0 },
   { nome: 'Arroz 5kg', preco: 28.0 },
@@ -71,7 +70,8 @@ const SUGESTOES_PRODUTOS: SugestaoProduto[] = [
   { nome: 'Peito de Frango 1kg', preco: 22.0 },
 ];
 
-const STALE_EXECUCAO_MS = 3 * 60 * 1000;
+const STALE_EXECUCAO_MS = 5 * 60 * 1000;
+const COOLDOWN_8H_MS = 8 * 60 * 60 * 1000;
 
 function normalizeKey(value: string): string {
   return value
@@ -83,6 +83,27 @@ function normalizeKey(value: string): string {
 
 function getProdutoNome(item: RadarProduto): string {
   return item.nome || item.produto || item.nome_produto || 'Produto';
+}
+
+function getDescontoPercent(item: RadarProduto): number | null {
+  const ref = Number(item.preco_referencia || 0);
+  const menor =
+    item.menor_preco_encontrado !== null && item.menor_preco_encontrado !== undefined
+      ? Number(item.menor_preco_encontrado)
+      : null;
+  if (menor === null || ref <= 0) return null;
+  return ((ref - menor) / ref) * 100;
+}
+
+function isProdutoMonitorado(item: RadarProduto): boolean {
+  return item.monitorado !== false;
+}
+
+function formatRemainingTime(ms: number): string {
+  const totalMinutes = Math.max(1, Math.ceil(ms / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${hours}h ${String(minutes).padStart(2, '0')}m`;
 }
 
 const DELIVERY_SHORTCUTS: DeliveryShortcut[] = [
@@ -143,6 +164,11 @@ export function RadarOfertas() {
   const [produtos, setProdutos] = useState<RadarProduto[]>([]);
   const [loadingProdutos, setLoadingProdutos] = useState(true);
   const [execucaoStatus, setExecucaoStatus] = useState<string | null>(null);
+  const [ultimoConcluidoEm, setUltimoConcluidoEm] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [activeTab, setActiveTab] = useState<'monitorados' | 'pausados'>('monitorados');
+  const [togglingMonitorId, setTogglingMonitorId] = useState<string | null>(null);
+  const [updatingIndividualId, setUpdatingIndividualId] = useState<string | null>(null);
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
   const [successMessage, setSuccessMessage] = useState(
     'Busca concluída! Ofertas atualizadas com sucesso.'
@@ -171,7 +197,25 @@ export function RadarOfertas() {
   }, []);
 
   const loadLatestExecucao = useCallback(async () => {
-    const { data } = await supabase.from('radar_execucoes').select('*');
+    const [activeRes, lastGeralRes] = await Promise.all([
+      supabase.from('radar_execucoes').select('*'),
+      supabase
+        .from('radar_execucoes')
+        .select('finalizado_em')
+        .eq('tipo', 'geral')
+        .eq('status', 'concluido')
+        .not('finalizado_em', 'is', null)
+        .order('finalizado_em', { ascending: false })
+        .limit(1),
+    ]);
+
+    if (lastGeralRes.data && lastGeralRes.data.length > 0) {
+      setUltimoConcluidoEm(lastGeralRes.data[0].finalizado_em ?? null);
+    } else {
+      setUltimoConcluidoEm(null);
+    }
+
+    const data = activeRes.data;
     if (data && data.length > 0) {
       const sorted = [...(data as RadarExecucao[])].sort((a, b) =>
         getExecucaoTimestamp(b).localeCompare(getExecucaoTimestamp(a))
@@ -183,6 +227,7 @@ export function RadarOfertas() {
 
       if (
         isFresh &&
+        latest?.tipo !== 'individual' &&
         (latest?.status === 'pendente' || latest?.status === 'rodando')
       ) {
         setExecucaoStatus(latest.status);
@@ -190,6 +235,13 @@ export function RadarOfertas() {
         setExecucaoStatus(null);
       }
     }
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 30000);
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -223,13 +275,34 @@ export function RadarOfertas() {
           const row = payload.new as RadarExecucao | undefined;
           if (!row?.status) return;
 
+          if (row.tipo === 'individual') {
+            if (row.status === 'concluido') {
+              setUpdatingIndividualId(null);
+              setSuccessMessage('Preço individual atualizado com sucesso!');
+              setShowSuccessBanner(true);
+              void loadProdutos();
+            } else if (row.status === 'erro') {
+              setUpdatingIndividualId(null);
+              setErrorMsg('Erro ao atualizar preço individual.');
+            }
+            return;
+          }
+
           if (row.status === 'pendente' || row.status === 'rodando') {
             setExecucaoStatus(row.status);
             setShowSuccessBanner(false);
           } else if (row.status === 'concluido') {
             setExecucaoStatus(null);
+            if (row.finalizado_em) {
+              setUltimoConcluidoEm(row.finalizado_em);
+              setNowMs(Date.now());
+            }
+            setSuccessMessage('Busca concluída! Ofertas atualizadas com sucesso.');
             setShowSuccessBanner(true);
             void loadProdutos();
+          } else if (row.status === 'bloqueado_8h') {
+            setExecucaoStatus(null);
+            void loadLatestExecucao();
           } else {
             setExecucaoStatus(null);
           }
@@ -249,73 +322,60 @@ export function RadarOfertas() {
     };
   }, [loadProdutos, loadLatestExecucao]);
 
+  const cooldownRemainingMs = useMemo(() => {
+    if (!ultimoConcluidoEm) return 0;
+    const finishedAt = new Date(ultimoConcluidoEm).getTime();
+    if (!Number.isFinite(finishedAt)) return 0;
+    const remaining = COOLDOWN_8H_MS - (nowMs - finishedAt);
+    return remaining > 0 ? remaining : 0;
+  }, [ultimoConcluidoEm, nowMs]);
+
+  const isCooldownLocked = cooldownRemainingMs > 0;
+
+  const produtosMonitorados = useMemo(
+    () => produtos.filter((item) => isProdutoMonitorado(item)),
+    [produtos]
+  );
+
+  const produtosPausados = useMemo(
+    () => produtos.filter((item) => !isProdutoMonitorado(item)),
+    [produtos]
+  );
+
+  const top10PreLista = useMemo(() => {
+    return produtos
+      .map((item) => ({
+        item,
+        desconto: getDescontoPercent(item),
+      }))
+      .filter((entry): entry is { item: RadarProduto; desconto: number } => entry.desconto !== null)
+      .sort((a, b) => b.desconto - a.desconto)
+      .slice(0, 10);
+  }, [produtos]);
+
   const handleBuscarPromocoes = async () => {
     setErrorMsg(null);
     setShowSuccessBanner(false);
 
-    if (produtos.length === 0) {
-      setErrorMsg('Adicione pelo menos 1 produto na lista antes de buscar.');
+    if (isCooldownLocked) {
+      setErrorMsg(
+        `Busca geral em intervalo mínimo de 8h. Próxima busca em ${formatRemainingTime(
+          cooldownRemainingMs
+        )}.`
+      );
+      return;
+    }
+
+    if (produtosMonitorados.length === 0) {
+      setErrorMsg('Ative ou adicione pelo menos 1 produto monitorado antes de buscar.');
       return;
     }
 
     setSubmittingSearch(true);
 
-    try {
-      const response = await fetch('/api/buscar-ofertas', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          produtos: produtos.map((item) => ({
-            id: item.id,
-            nome: getProdutoNome(item),
-            preco_referencia: Number(item.preco_referencia || 0),
-          })),
-        }),
-      });
-
-      if (response.ok) {
-        const payload = (await response.json()) as {
-          results?: BuscaApiResult[];
-          elapsedMs?: number;
-        };
-        const results = payload.results ?? [];
-        const encontrados = results.filter(
-          (r) => r.menor_preco_encontrado !== null
-        );
-
-        await Promise.all(
-          encontrados.map((item) =>
-            supabase
-              .from('radar_produtos')
-              .update({
-                menor_preco_encontrado: item.menor_preco_encontrado,
-                mercado_vencedor: item.mercado_vencedor,
-                link_oferta: item.link_oferta,
-                super_oferta: item.super_oferta,
-                atualizado_em: item.atualizado_em,
-              })
-              .eq('id', item.id)
-          )
-        );
-
-        await loadProdutos();
-        const segundos = payload.elapsedMs
-          ? ` em ${(payload.elapsedMs / 1000).toFixed(1)}s`
-          : '';
-        setSuccessMessage(
-          `Busca concluída${segundos}! ${encontrados.length} de ${produtos.length} item(ns) atualizado(s).`
-        );
-        setShowSuccessBanner(true);
-        setSubmittingSearch(false);
-        return;
-      }
-    } catch {
-      // Fallback para fila do worker local caso /api/buscar-ofertas não esteja disponível
-    }
-
     const { error } = await supabase
       .from('radar_execucoes')
-      .insert({ status: 'pendente' });
+      .insert({ tipo: 'geral', status: 'pendente' });
 
     setSubmittingSearch(false);
 
@@ -328,6 +388,44 @@ export function RadarOfertas() {
     setExecucaoStatus('pendente');
   };
 
+  const handleToggleMonitorado = async (item: RadarProduto) => {
+    setErrorMsg(null);
+    const nextValue = !isProdutoMonitorado(item);
+    setTogglingMonitorId(item.id);
+    setProdutos((prev) =>
+      prev.map((p) => (p.id === item.id ? { ...p, monitorado: nextValue } : p))
+    );
+
+    const { error } = await supabase
+      .from('radar_produtos')
+      .update({ monitorado: nextValue })
+      .eq('id', item.id);
+
+    setTogglingMonitorId(null);
+
+    if (error) {
+      setErrorMsg('Não foi possível alterar o status de monitoramento.');
+      void loadProdutos();
+    }
+  };
+
+  const handleAtualizarIndividual = async (item: RadarProduto) => {
+    setErrorMsg(null);
+    setShowSuccessBanner(false);
+    setUpdatingIndividualId(item.id);
+
+    const { error } = await supabase.from('radar_execucoes').insert({
+      tipo: 'individual',
+      produto_id: item.id,
+      status: 'pendente',
+    });
+
+    if (error) {
+      setUpdatingIndividualId(null);
+      setErrorMsg(`Erro ao solicitar atualização individual: ${error.message}`);
+    }
+  };
+
   const handleAddSugestao = async (sugestao: SugestaoProduto) => {
     setErrorMsg(null);
     setAddingSugestao(sugestao.nome);
@@ -337,6 +435,7 @@ export function RadarOfertas() {
       .insert({
         nome: sugestao.nome,
         preco_referencia: sugestao.preco,
+        monitorado: true,
       })
       .select()
       .single();
@@ -375,6 +474,7 @@ export function RadarOfertas() {
       .insert({
         nome: nomeLimpo,
         preco_referencia: precoNumerico,
+        monitorado: true,
       })
       .select()
       .single();
@@ -406,13 +506,15 @@ export function RadarOfertas() {
 
   const isBuscando = execucaoStatus === 'pendente' || execucaoStatus === 'rodando';
   const nomesNaLista = new Set(produtos.map((p) => normalizeKey(getProdutoNome(p))));
+  const produtosDaAba =
+    activeTab === 'monitorados' ? produtosMonitorados : produtosPausados;
 
   useEffect(() => {
     if (execucaoStatus !== 'pendente') return;
     const timer = window.setTimeout(() => {
       setExecucaoStatus(null);
       setErrorMsg(
-        'O worker local não respondeu em 25s. Verifique se ele está ativo ou use a versão publicada na Vercel.'
+        'O worker local não respondeu em 25s. Verifique se o radar_worker.py está ativo.'
       );
     }, 25000);
     return () => window.clearTimeout(timer);
@@ -436,13 +538,15 @@ export function RadarOfertas() {
             type="button"
             className="radar-primary-btn"
             onClick={handleBuscarPromocoes}
-            disabled={submittingSearch || isBuscando}
+            disabled={submittingSearch || isBuscando || isCooldownLocked}
           >
             {submittingSearch || isBuscando ? (
               <>
                 <Loader2 size={20} className="radar-spinner" />
                 Buscando Promoções...
               </>
+            ) : isCooldownLocked ? (
+              `⏳ Próxima busca geral em ${formatRemainingTime(cooldownRemainingMs)}`
             ) : (
               '🔍 Buscar Promoções Agora'
             )}
@@ -451,7 +555,7 @@ export function RadarOfertas() {
           {(submittingSearch || isBuscando) && (
             <div className="radar-status-banner radar-status-running" role="status">
               <Loader2 size={18} className="radar-spinner" />
-              <span>Buscando ofertas no Tauste e Carrefour...</span>
+              <span>Buscando ofertas no Tauste, Carrefour, Shibata e Nagumo...</span>
             </div>
           )}
 
@@ -497,13 +601,76 @@ export function RadarOfertas() {
           </div>
         </section>
 
-        {/* 3. Lista de Mercado Monitorada (Tauste & Carrefour) */}
+        {/* 3. Lista de Mercado Monitorada (Tauste, Carrefour, Shibata & Nagumo) */}
         <section className="radar-section">
           <div className="radar-section-header">
             <h2 className="radar-section-title">
-              Lista Monitorada (Tauste &amp; Carrefour)
+              Lista Monitorada (Tauste, Carrefour, Shibata &amp; Nagumo)
             </h2>
             <span className="radar-section-badge">Meta: &gt;50% OFF</span>
+          </div>
+
+          {/* Pré-Lista Inteligente: Top 10 Melhores Ofertas */}
+          <div className="radar-prelist-card">
+            <div className="radar-prelist-header">
+              <div className="radar-prelist-title-wrap">
+                <Flame size={17} className="radar-prelist-flame" />
+                <h3 className="radar-prelist-title">
+                  🔥 Top 10 Melhores Ofertas (Pré-Lista)
+                </h3>
+              </div>
+              <span className="radar-suggestions-hint">
+                Maior % de desconto
+              </span>
+            </div>
+
+            {top10PreLista.length === 0 ? (
+              <p className="radar-prelist-empty">
+                Rode uma busca para preencher automaticamente os 10 itens com maior desconto.
+              </p>
+            ) : (
+              <div className="radar-prelist-items">
+                {top10PreLista.map(({ item, desconto }, idx) => {
+                  const monitorado = isProdutoMonitorado(item);
+                  const nome = getProdutoNome(item);
+                  const mercado =
+                    item.mercado_vencedor ||
+                    item.mercado ||
+                    item.supermercado ||
+                    item.loja ||
+                    null;
+
+                  return (
+                    <div key={item.id} className="radar-prelist-row">
+                      <div className="radar-prelist-info">
+                        <span className="radar-prelist-rank">#{idx + 1}</span>
+                        <div className="radar-prelist-meta">
+                          <span className="radar-prelist-name">{nome}</span>
+                          <span className="radar-prelist-sub">
+                            {item.menor_preco_encontrado != null
+                              ? formatBRL(Number(item.menor_preco_encontrado))
+                              : '—'}
+                            {mercado ? ` • ${mercado}` : ''} •{' '}
+                            <strong>{Math.round(desconto)}% OFF</strong>
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        className={`radar-prelist-toggle ${
+                          monitorado ? 'is-active' : 'is-paused'
+                        }`}
+                        disabled={togglingMonitorId === item.id}
+                        onClick={() => void handleToggleMonitorado(item)}
+                      >
+                        {monitorado ? 'Monitorando' : 'Não Monitorar'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="radar-suggestions-card">
@@ -593,6 +760,32 @@ export function RadarOfertas() {
             </button>
           </form>
 
+          {/* Abas de Controle: Monitorados vs. Não Monitorados */}
+          <div className="radar-tabs" role="tablist" aria-label="Controle de monitoramento">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'monitorados'}
+              className={`radar-tab-btn ${
+                activeTab === 'monitorados' ? 'is-active' : ''
+              }`}
+              onClick={() => setActiveTab('monitorados')}
+            >
+              Monitorados (Ativos) ({produtosMonitorados.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'pausados'}
+              className={`radar-tab-btn ${
+                activeTab === 'pausados' ? 'is-active' : ''
+              }`}
+              onClick={() => setActiveTab('pausados')}
+            >
+              Não Monitorados (Pausados) ({produtosPausados.length})
+            </button>
+          </div>
+
           {loadingProdutos ? (
             <div className="radar-empty-state">
               <Loader2
@@ -602,20 +795,20 @@ export function RadarOfertas() {
               />
               Carregando lista monitorada...
             </div>
-          ) : produtos.length === 0 ? (
+          ) : produtosDaAba.length === 0 ? (
             <div className="radar-empty-state">
               <ShoppingBasket
                 size={26}
                 style={{ margin: '0 auto 8px', display: 'block', color: '#94a3b8' }}
               />
-              Nenhum produto na lista ainda. Adicione itens acima para monitorar
-              descontos no Tauste e Carrefour!
+              {activeTab === 'monitorados'
+                ? 'Nenhum produto ativo no monitoramento. Adicione itens acima ou reative itens pausados.'
+                : 'Nenhum produto pausado no momento.'}
             </div>
           ) : (
             <div className="radar-products-list">
-              {produtos.map((item) => {
-                const nome =
-                  item.nome || item.produto || item.nome_produto || 'Produto';
+              {produtosDaAba.map((item) => {
+                const nome = getProdutoNome(item);
                 const precoNormal = Number(item.preco_referencia || 0);
                 const menorPreco =
                   item.menor_preco_encontrado !== null &&
@@ -623,11 +816,7 @@ export function RadarOfertas() {
                     ? Number(item.menor_preco_encontrado)
                     : null;
 
-                const desconto =
-                  menorPreco !== null && precoNormal > 0
-                    ? ((precoNormal - menorPreco) / precoNormal) * 100
-                    : null;
-
+                const desconto = getDescontoPercent(item);
                 const isSuperOferta =
                   Boolean(item.super_oferta) ||
                   (desconto !== null && desconto >= 50);
@@ -639,12 +828,16 @@ export function RadarOfertas() {
                   item.loja ||
                   null;
 
+                const monitorado = isProdutoMonitorado(item);
+                const isUpdatingThis = updatingIndividualId === item.id;
+                const isTogglingThis = togglingMonitorId === item.id;
+
                 return (
                   <article
                     key={item.id}
                     className={`radar-product-card ${
                       isSuperOferta ? 'is-super-oferta' : ''
-                    }`}
+                    } ${!monitorado ? 'is-paused' : ''}`}
                   >
                     <div className="radar-product-top">
                       <div>
@@ -711,19 +904,61 @@ export function RadarOfertas() {
                       </div>
                     )}
 
-                    {item.link_oferta && (
-                      <a
-                        href={item.link_oferta}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className={`radar-offer-link-btn ${
-                          isSuperOferta ? '' : 'radar-offer-link-secondary'
-                        }`}
-                      >
-                        Ver no Site
-                        <ExternalLink size={16} />
-                      </a>
-                    )}
+                    <div className="radar-card-actions">
+                      {item.link_oferta && (
+                        <a
+                          href={item.link_oferta}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={`radar-offer-link-btn ${
+                            isSuperOferta ? '' : 'radar-offer-link-secondary'
+                          }`}
+                        >
+                          Ver no Site
+                          <ExternalLink size={16} />
+                        </a>
+                      )}
+
+                      {monitorado ? (
+                        <button
+                          type="button"
+                          className="radar-action-btn radar-pause-btn"
+                          disabled={isTogglingThis}
+                          onClick={() => void handleToggleMonitorado(item)}
+                        >
+                          <Pause size={15} />
+                          Pausar
+                        </button>
+                      ) : (
+                        <div className="radar-paused-actions">
+                          <button
+                            type="button"
+                            className="radar-action-btn radar-refresh-btn"
+                            disabled={isUpdatingThis}
+                            onClick={() => void handleAtualizarIndividual(item)}
+                          >
+                            {isUpdatingThis ? (
+                              <Loader2 size={15} className="radar-spinner" />
+                            ) : (
+                              <RefreshCw size={15} />
+                            )}
+                            {isUpdatingThis
+                              ? 'Atualizando...'
+                              : '🔄 Atualizar Preço Agora'}
+                          </button>
+
+                          <button
+                            type="button"
+                            className="radar-action-btn radar-resume-btn"
+                            disabled={isTogglingThis}
+                            onClick={() => void handleToggleMonitorado(item)}
+                          >
+                            <Play size={15} />
+                            ▶️ Monitorar
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </article>
                 );
               })}

@@ -591,3 +591,228 @@
   font-weight: 500;
   opacity: 0.78;
 }
+
+
+/* Pré-Lista Inteligente (Top 10 Melhores Ofertas) */
+.radar-prelist-card {
+  background: linear-gradient(180deg, #fffbeb 0%, #ffffff 45%);
+  border: 1.5px solid #fde68a;
+  border-radius: 18px;
+  padding: 15px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.08);
+}
+
+.radar-prelist-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.radar-prelist-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.radar-prelist-flame {
+  color: #ea580c;
+  flex-shrink: 0;
+}
+
+.radar-prelist-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.radar-prelist-empty {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.radar-prelist-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.radar-prelist-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.radar-prelist-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.radar-prelist-rank {
+  font-size: 12px;
+  font-weight: 800;
+  color: #b45309;
+  background: #fef3c7;
+  padding: 3px 7px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.radar-prelist-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.radar-prelist-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.radar-prelist-sub {
+  font-size: 12px;
+  color: #475569;
+}
+
+.radar-prelist-toggle {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.1s ease, opacity 0.15s ease;
+  touch-action: manipulation;
+}
+
+.radar-prelist-toggle.is-active {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.radar-prelist-toggle.is-paused {
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.radar-prelist-toggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Abas de Controle (Monitorados vs Não Monitorados) */
+.radar-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  background: #e2e8f0;
+  padding: 5px;
+  border-radius: 14px;
+}
+
+.radar-tab-btn {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 8px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #475569;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  touch-action: manipulation;
+}
+
+.radar-tab-btn.is-active {
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+}
+
+/* Card Actions & Paused State */
+.radar-product-card.is-paused {
+  opacity: 0.92;
+  border-style: dashed;
+}
+
+.radar-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.radar-paused-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+@media (max-width: 380px) {
+  .radar-paused-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+.radar-action-btn {
+  min-height: 44px;
+  border-radius: 12px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  transition: transform 0.12s ease, background 0.15s ease;
+  touch-action: manipulation;
+}
+
+.radar-action-btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.radar-action-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.radar-pause-btn {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.radar-refresh-btn {
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  color: #1d4ed8;
+}
+
+.radar-resume-btn {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #047857;
+}

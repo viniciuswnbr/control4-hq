@@ -1,12 +1,8 @@
 import os
-import re
 import time
-import unicodedata
-import urllib.parse
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from playwright.sync_api import sync_playwright
 from supabase import create_client
 
 
@@ -32,11 +28,6 @@ load_env_files()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://eyinimyrycqaafupkaaa.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SECRET_KEY") or ""
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-}
-STOP_WORDS = {"de", "da", "do", "das", "dos", "com", "sem", "para", "em", "e", "ou", "tipo"}
 
 if not SUPABASE_KEY:
     raise RuntimeError("SUPABASE_KEY não encontrada no ambiente ou nos arquivos .env")
@@ -44,173 +35,199 @@ if not SUPABASE_KEY:
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-def normalize_text(value: str) -> str:
-    return "".join(
-        c for c in unicodedata.normalize("NFD", value.lower())
-        if unicodedata.category(c) != "Mn"
+def otimizar_pagina(page):
+    """Bloqueia imagens, mídia, CSS e fontes para acelerar em até 5x."""
+    page.route(
+        "**/*",
+        lambda route: route.abort()
+        if route.request.resource_type in ["image", "media", "font", "stylesheet"]
+        else route.continue_(),
     )
 
 
-def extract_keywords(query: str) -> list[str]:
-    return [
-        tok for tok in re.split(r"[^a-z0-9]+", normalize_text(query))
-        if len(tok) >= 2 and tok not in STOP_WORDS
-    ]
-
-
-def matches_title(title: str, keywords: list[str]) -> bool:
-    if not keywords:
-        return True
-    return keywords[0] in normalize_text(title)
-
-
-def score_title(title: str, keywords: list[str]) -> int:
-    norm = normalize_text(title)
-    return sum(1 for kw in keywords if kw in norm)
-
-
-def parse_brl(raw: str) -> float | None:
-    cleaned = re.sub(r"[^\d,.]", "", raw.replace("&nbsp;", " ")).strip()
-    if not cleaned:
-        return None
-    normalized = cleaned.replace(".", "").replace(",", ".") if "," in cleaned else cleaned
+def extrair_valor(texto: str) -> float | None:
+    limpo = "".join(c for c in texto if c.isdigit() or c in [",", "."])
+    limpo = limpo.replace(".", "").replace(",", ".").strip()
     try:
-        val = float(normalized)
+        val = float(limpo)
         return val if val > 0 else None
     except ValueError:
         return None
 
 
-def fetch_html(url: str) -> str | None:
+def buscar_carrefour(page, termo: str):
     try:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.read().decode("utf-8", "ignore")
+        url = f"https://mercado.carrefour.com.br/busca/{termo.replace(' ', '%20')}"
+        page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        page.wait_for_timeout(1500)
+        el = page.locator("[data-test-id='price-value'], .text-blue-royal").first
+        if el.is_visible():
+            return extrair_valor(el.inner_text()), url
     except Exception:
-        return None
+        pass
+    return None, None
 
 
-def buscar_preco_carrefour(termo: str):
-    url = f"https://mercado.carrefour.com.br/busca/{urllib.parse.quote(termo)}"
-    html = fetch_html(url)
-    if not html:
-        return None, None
+def buscar_tauste(page, termo: str):
+    try:
+        url = f"https://tauste.com.br/taubate/catalogsearch/result/?q={termo.replace(' ', '+')}"
+        page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        page.wait_for_timeout(1500)
+        el = page.locator(".price-wrapper .price").first
+        if el.is_visible():
+            return extrair_valor(el.inner_text()), url
+    except Exception:
+        pass
+    return None, None
 
-    keywords = extract_keywords(termo)
-    pattern = re.compile(
-        r"<h2[^>]*>([^<]+)</h2>[\s\S]{0,1200}?text-price-default[^>]*>([^<]+)<",
-        re.I,
+
+def buscar_shibata(page, termo: str):
+    try:
+        url = f"https://www.shibatacasaemercado.com.br/busca?q={termo.replace(' ', '%20')}"
+        page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        page.wait_for_timeout(1500)
+        el = page.locator(".price, [class*='price'], [class*='Price']").first
+        if el.is_visible():
+            return extrair_valor(el.inner_text()), url
+    except Exception:
+        pass
+    return None, None
+
+
+def buscar_nagumo(page, termo: str):
+    try:
+        url = f"https://www.nagumo.com.br/taubate/busca?q={termo.replace(' ', '%20')}"
+        page.goto(url, timeout=15000, wait_until="domcontentloaded")
+        page.wait_for_timeout(1500)
+        el = page.locator(".price, [class*='price'], [class*='Price']").first
+        if el.is_visible():
+            return extrair_valor(el.inner_text()), url
+    except Exception:
+        pass
+    return None, None
+
+
+def pode_rodar_geral() -> bool:
+    res = (
+        supabase.table("radar_execucoes")
+        .select("finalizado_em")
+        .eq("tipo", "geral")
+        .eq("status", "concluido")
+        .order("finalizado_em", desc=True)
+        .limit(1)
+        .execute()
     )
-    candidates = []
-    for title, raw_price in pattern.findall(html):
-        if not matches_title(title, keywords):
-            continue
-        preco = parse_brl(raw_price)
-        if preco:
-            candidates.append((score_title(title, keywords), preco))
-
-    if not candidates:
-        return None, None
-    max_score = max(c[0] for c in candidates)
-    best_price = min(p for s, p in candidates if s == max_score)
-    return best_price, url
+    if not res.data or not res.data[0].get("finalizado_em"):
+        return True
+    ultimo = datetime.fromisoformat(res.data[0]["finalizado_em"].replace("Z", "+00:00"))
+    return (datetime.now(timezone.utc) - ultimo) >= timedelta(hours=8)
 
 
-def buscar_preco_tauste(termo: str):
-    url = f"https://tauste.com.br/taubate/catalogsearch/result/?q={urllib.parse.quote_plus(termo)}"
-    html = fetch_html(url)
-    if not html:
-        return None, None
+def processar_execucao(execucao: dict):
+    exec_id = execucao["id"]
+    tipo = execucao.get("tipo") or "geral"
+    produto_id = execucao.get("produto_id")
 
-    keywords = extract_keywords(termo)
-    pattern = re.compile(
-        r'<strong class="product-item-name">\s*<a[^>]*>([\s\S]*?)</a>\s*</strong>[\s\S]{0,1500}?class="price"[^>]*>([^<]+)<',
-        re.I,
-    )
-    candidates = []
-    for title, raw_price in pattern.findall(html):
-        clean_title = re.sub(r"\s+", " ", title).strip()
-        if not matches_title(clean_title, keywords):
-            continue
-        preco = parse_brl(raw_price)
-        if preco:
-            candidates.append((score_title(clean_title, keywords), preco))
+    if tipo == "geral" and not pode_rodar_geral():
+        print("Execução geral bloqueada: intervalo mínimo de 8 horas não atingido.")
+        supabase.table("radar_execucoes").update({"status": "bloqueado_8h"}).eq(
+            "id", exec_id
+        ).execute()
+        return
 
-    if not candidates:
-        return None, None
-    max_score = max(c[0] for c in candidates)
-    best_price = min(p for s, p in candidates if s == max_score)
-    return best_price, url
-
-
-def processar_produto(prod: dict):
-    nome = prod["nome"]
-    ref = float(prod["preco_referencia"])
-    print(f"Buscando: {nome}...")
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_c = pool.submit(buscar_preco_carrefour, nome)
-        f_t = pool.submit(buscar_preco_tauste, nome)
-        p_carrefour, link_c = f_c.result()
-        p_tauste, link_t = f_t.result()
-
-    candidatos = []
-    if p_carrefour:
-        candidatos.append((p_carrefour, "Carrefour", link_c))
-    if p_tauste:
-        candidatos.append((p_tauste, "Tauste", link_t))
-
-    if candidatos:
-        menor_preco, mercado, link = min(candidatos, key=lambda x: x[0])
-        desconto = ((ref - menor_preco) / ref) * 100 if ref > 0 else 0
-        supabase.table("radar_produtos").update(
-            {
-                "menor_preco_encontrado": menor_preco,
-                "mercado_vencedor": mercado,
-                "link_oferta": link,
-                "super_oferta": desconto >= 50.0,
-                "atualizado_em": datetime.now(timezone.utc).isoformat(),
-            }
-        ).eq("id", prod["id"]).execute()
-
-
-def executar_varredura(execucao_id: str):
     supabase.table("radar_execucoes").update({"status": "rodando"}).eq(
-        "id", execucao_id
+        "id", exec_id
     ).execute()
 
     try:
-        produtos = supabase.table("radar_produtos").select("*").execute().data or []
+        if tipo == "individual" and produto_id:
+            produtos = (
+                supabase.table("radar_produtos")
+                .select("*")
+                .eq("id", produto_id)
+                .execute()
+                .data
+                or []
+            )
+        else:
+            # Busca apenas os monitorados para manter alta performance
+            produtos = (
+                supabase.table("radar_produtos")
+                .select("*")
+                .eq("monitorado", True)
+                .execute()
+                .data
+                or []
+            )
+
         if produtos:
-            with ThreadPoolExecutor(max_workers=5) as pool:
-                list(pool.map(processar_produto, produtos))
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(locale="pt-BR")
+                page = context.new_page()
+                otimizar_pagina(page)
+
+                for prod in produtos:
+                    nome = prod["nome"]
+                    ref = float(prod["preco_referencia"] or 0)
+                    print(f"[{tipo.upper()}] Buscando: {nome}...")
+
+                    resultados = []
+                    for fn, mercado in [
+                        (buscar_carrefour, "Carrefour"),
+                        (buscar_tauste, "Tauste"),
+                        (buscar_shibata, "Shibata"),
+                        (buscar_nagumo, "Nagumo"),
+                    ]:
+                        preco, link = fn(page, nome)
+                        if preco and preco > 0:
+                            resultados.append((preco, mercado, link))
+
+                    if resultados:
+                        menor_preco, mercado, link = min(resultados, key=lambda x: x[0])
+                        desconto = ((ref - menor_preco) / ref) * 100 if ref > 0 else 0
+                        super_oferta = desconto >= 50.0
+
+                        supabase.table("radar_produtos").update(
+                            {
+                                "menor_preco_encontrado": menor_preco,
+                                "mercado_vencedor": mercado,
+                                "link_oferta": link,
+                                "super_oferta": super_oferta,
+                                "atualizado_em": datetime.now(timezone.utc).isoformat(),
+                            }
+                        ).eq("id", prod["id"]).execute()
+
+                browser.close()
 
         supabase.table("radar_execucoes").update(
             {
                 "status": "concluido",
                 "finalizado_em": datetime.now(timezone.utc).isoformat(),
             }
-        ).eq("id", execucao_id).execute()
-        print("Varredura concluída!")
+        ).eq("id", exec_id).execute()
+        print(f"Execução {tipo} finalizada!")
     except Exception as exc:
-        print(f"Erro na varredura: {exc}")
+        print(f"Erro na execução {tipo}: {exc}")
         supabase.table("radar_execucoes").update(
             {
                 "status": "erro",
                 "finalizado_em": datetime.now(timezone.utc).isoformat(),
             }
-        ).eq("id", execucao_id).execute()
+        ).eq("id", exec_id).execute()
 
 
 if __name__ == "__main__":
-    print("Radar Worker (HTTP paralelo) ativo aguardando cliques...")
+    print("Radar Worker (4 Mercados + Trava 8h) ativo...")
     while True:
         res = (
             supabase.table("radar_execucoes")
             .select("*")
             .eq("status", "pendente")
+            .order("criado_em")
+            .limit(1)
             .execute()
         )
         if res.data:
-            executar_varredura(res.data[0]["id"])
-        time.sleep(3)
+            processar_execucao(res.data[0])
+        time.sleep(4)
