@@ -168,8 +168,21 @@ function getDescontoInfo(item: RadarProduto): {
   return { valor, percentual };
 }
 
-function isProdutoVisivel(item: RadarProduto): boolean {
+function isNaProximaBusca(item: RadarProduto): boolean {
   return item.monitorado !== false;
+}
+
+const HIDDEN_STORAGE_KEY = 'radar_ocultos_ids';
+
+function loadHiddenIds(): string[] {
+  try {
+    const raw = window.localStorage.getItem(HIDDEN_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 function getExecucaoTimestamp(exec: RadarExecucao): string {
@@ -196,9 +209,10 @@ function sortByDesconto(items: RadarProduto[]): RadarProduto[] {
 
 export function RadarOfertas() {
   const [mainTab, setMainTab] = useState<'supermercados' | 'delivery'>('supermercados');
-  const [visibilityFilter, setVisibilityFilter] = useState<'visiveis' | 'ocultos'>('visiveis');
+  const [listFilter, setListFilter] = useState<'todos' | 'na_busca' | 'ocultos'>('todos');
   const [onlyPromocoes, setOnlyPromocoes] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [hiddenIds, setHiddenIds] = useState<string[]>(() => loadHiddenIds());
 
   const [produtos, setProdutos] = useState<RadarProduto[]>([]);
   const [loadingProdutos, setLoadingProdutos] = useState(true);
@@ -369,25 +383,36 @@ export function RadarOfertas() {
 
   const isCooldownLocked = cooldownRemainingMs > 0;
 
+  const hiddenSet = useMemo(() => new Set(hiddenIds), [hiddenIds]);
+
   const produtosVisiveis = useMemo(
-    () => produtos.filter((item) => isProdutoVisivel(item)),
-    [produtos]
+    () => produtos.filter((item) => !hiddenSet.has(item.id)),
+    [produtos, hiddenSet]
+  );
+
+  const produtosNaProximaBusca = useMemo(
+    () => produtosVisiveis.filter((item) => isNaProximaBusca(item)),
+    [produtosVisiveis]
   );
 
   const produtosOcultos = useMemo(
-    () => produtos.filter((item) => !isProdutoVisivel(item)),
-    [produtos]
+    () => produtos.filter((item) => hiddenSet.has(item.id)),
+    [produtos, hiddenSet]
   );
 
   const listaExibida = useMemo(() => {
     const base =
-      visibilityFilter === 'visiveis' ? produtosVisiveis : produtosOcultos;
+      listFilter === 'todos'
+        ? produtosVisiveis
+        : listFilter === 'na_busca'
+          ? produtosNaProximaBusca
+          : produtosOcultos;
     if (!onlyPromocoes) return base;
     return base.filter((item) => {
       const { valor } = getDescontoInfo(item);
       return valor !== null && valor > 0;
     });
-  }, [visibilityFilter, produtosVisiveis, produtosOcultos, onlyPromocoes]);
+  }, [listFilter, produtosVisiveis, produtosNaProximaBusca, produtosOcultos, onlyPromocoes]);
 
   const resumoPromocoes = useMemo(() => {
     const comDesconto = produtosVisiveis.filter((p) => {
@@ -417,8 +442,8 @@ export function RadarOfertas() {
       return;
     }
 
-    if (produtosVisiveis.length === 0) {
-      setErrorMsg('Deixe pelo menos 1 produto visível/ativo antes de buscar.');
+    if (produtosNaProximaBusca.length === 0) {
+      setErrorMsg('Inclua pelo menos 1 produto na próxima busca antes de buscar.');
       return;
     }
 
@@ -439,9 +464,9 @@ export function RadarOfertas() {
     setExecucaoStatus('pendente');
   };
 
-  const handleToggleVisibilidade = async (item: RadarProduto) => {
+  const handleToggleProximaBusca = async (item: RadarProduto) => {
     setErrorMsg(null);
-    const nextValue = !isProdutoVisivel(item);
+    const nextValue = !isNaProximaBusca(item);
     setTogglingId(item.id);
     setProdutos((prev) =>
       sortByDesconto(
@@ -457,8 +482,27 @@ export function RadarOfertas() {
     setTogglingId(null);
 
     if (error) {
-      setErrorMsg('Não foi possível alterar a exibição do item.');
+      setErrorMsg('Não foi possível atualizar a inclusão na próxima busca.');
       void loadProdutos();
+    }
+  };
+
+  const handleToggleOcultar = async (item: RadarProduto) => {
+    const isHidden = hiddenSet.has(item.id);
+    const nextHidden = isHidden
+      ? hiddenIds.filter((id) => id !== item.id)
+      : [...hiddenIds, item.id];
+
+    setHiddenIds(nextHidden);
+    try {
+      window.localStorage.setItem(HIDDEN_STORAGE_KEY, JSON.stringify(nextHidden));
+    } catch {
+      // ignore storage errors
+    }
+
+    // Ao ocultar, também pausa da busca automática; ao exibir novamente, mantém o estado
+    if (!isHidden && isNaProximaBusca(item)) {
+      await handleToggleProximaBusca(item);
     }
   };
 
@@ -669,6 +713,12 @@ export function RadarOfertas() {
                     <strong>{resumoPromocoes.totalEmPromocao}</strong> em promoção
                   </span>
                 </div>
+                <div className="radar-stat-chip">
+                  <span>
+                    <strong>{produtosNaProximaBusca.length}</strong> de{' '}
+                    <strong>{produtosVisiveis.length}</strong> na próxima busca
+                  </span>
+                </div>
                 {resumoPromocoes.maiorDesconto > 0 && (
                   <div className="radar-stat-chip">
                     <span>
@@ -679,31 +729,41 @@ export function RadarOfertas() {
               </div>
             </div>
 
-            {/* Controles de visualização: Visíveis vs Ocultos + Só Promoções + Adicionar */}
+            {/* Controles de visualização: Todos / Na próxima busca / Ocultos */}
             <div className="radar-controls-bar">
               <div className="radar-subtabs" role="tablist" aria-label="Exibição">
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={visibilityFilter === 'visiveis'}
+                  aria-selected={listFilter === 'todos'}
                   className={`radar-subtab ${
-                    visibilityFilter === 'visiveis' ? 'is-active' : ''
+                    listFilter === 'todos' ? 'is-active' : ''
                   }`}
-                  onClick={() => setVisibilityFilter('visiveis')}
+                  onClick={() => setListFilter('todos')}
                 >
-                  <Eye size={14} />
-                  Exibindo ({produtosVisiveis.length})
+                  Todos ({produtosVisiveis.length})
                 </button>
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={visibilityFilter === 'ocultos'}
+                  aria-selected={listFilter === 'na_busca'}
                   className={`radar-subtab ${
-                    visibilityFilter === 'ocultos' ? 'is-active' : ''
+                    listFilter === 'na_busca' ? 'is-active' : ''
                   }`}
-                  onClick={() => setVisibilityFilter('ocultos')}
+                  onClick={() => setListFilter('na_busca')}
                 >
-                  <EyeOff size={14} />
+                  Na próxima busca ({produtosNaProximaBusca.length})
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={listFilter === 'ocultos'}
+                  className={`radar-subtab ${
+                    listFilter === 'ocultos' ? 'is-active' : ''
+                  }`}
+                  onClick={() => setListFilter('ocultos')}
+                >
+                  <EyeOff size={13} />
                   Ocultos ({produtosOcultos.length})
                 </button>
               </div>
@@ -836,9 +896,11 @@ export function RadarOfertas() {
                 />
                 {onlyPromocoes
                   ? 'Nenhum item com desconto encontrado neste filtro.'
-                  : visibilityFilter === 'visiveis'
-                    ? 'Nenhum produto exibido. Adicione um produto acima ou restaure da aba Ocultos.'
-                    : 'Nenhum produto oculto no momento.'}
+                  : listFilter === 'todos'
+                    ? 'Nenhum produto cadastrado. Clique em "+ Produto" acima para adicionar.'
+                    : listFilter === 'na_busca'
+                      ? 'Nenhum item selecionado para a próxima busca.'
+                      : 'Nenhum produto oculto no momento.'}
               </div>
             ) : (
               <div className="radar-table-card">
@@ -848,7 +910,7 @@ export function RadarOfertas() {
                   <span>Preço Atual</span>
                   <span>Desconto</span>
                   <span>Supermercado</span>
-                  <span className="radar-col-actions">Ações</span>
+                  <span className="radar-col-actions">Próxima busca / Ações</span>
                 </div>
 
                 <div className="radar-table-body">
@@ -864,7 +926,8 @@ export function RadarOfertas() {
                     const { valor: descontoValor, percentual: descontoPct } =
                       getDescontoInfo(item);
                     const mercado = getMercadoNome(item);
-                    const visivel = isProdutoVisivel(item);
+                    const naBusca = isNaProximaBusca(item);
+                    const isHidden = hiddenSet.has(item.id);
                     const isPromocao = descontoValor !== null && descontoValor > 0;
                     const isSuperOferta =
                       Boolean(item.super_oferta) ||
@@ -975,41 +1038,47 @@ export function RadarOfertas() {
 
                         {/* Ações */}
                         <div className="radar-cell radar-cell-actions">
-                          {!visivel && (
+                          {!isHidden && (
                             <button
                               type="button"
-                              className="radar-icon-btn radar-btn-refresh"
-                              title="Atualizar preço agora"
-                              disabled={isUpdatingThis}
-                              onClick={() => void handleAtualizarIndividual(item)}
+                              className={`radar-search-toggle-btn ${
+                                naBusca ? 'is-included' : 'is-excluded'
+                              }`}
+                              disabled={isTogglingThis}
+                              title={
+                                naBusca
+                                  ? 'Incluído na próxima busca (clique para remover)'
+                                  : 'Fora da próxima busca (clique para incluir)'
+                              }
+                              onClick={() => void handleToggleProximaBusca(item)}
                             >
-                              {isUpdatingThis ? (
-                                <Loader2 size={15} className="radar-spinner" />
-                              ) : (
-                                <RefreshCw size={15} />
-                              )}
+                              {naBusca ? '✓ Na busca' : '+ Incluir'}
                             </button>
                           )}
 
                           <button
                             type="button"
-                            className={`radar-visibility-btn ${
-                              visivel ? 'is-hide' : 'is-show'
-                            }`}
-                            disabled={isTogglingThis}
-                            onClick={() => void handleToggleVisibilidade(item)}
+                            className="radar-icon-btn radar-btn-refresh"
+                            title="Atualizar preço agora"
+                            disabled={isUpdatingThis}
+                            onClick={() => void handleAtualizarIndividual(item)}
                           >
-                            {visivel ? (
-                              <>
-                                <EyeOff size={14} />
-                                Ocultar
-                              </>
+                            {isUpdatingThis ? (
+                              <Loader2 size={14} className="radar-spinner" />
                             ) : (
-                              <>
-                                <Eye size={14} />
-                                Exibir
-                              </>
+                              <RefreshCw size={14} />
                             )}
+                          </button>
+
+                          <button
+                            type="button"
+                            className={`radar-icon-btn ${
+                              isHidden ? 'radar-btn-show' : ''
+                            }`}
+                            title={isHidden ? 'Voltar a exibir' : 'Ocultar da lista'}
+                            onClick={() => void handleToggleOcultar(item)}
+                          >
+                            {isHidden ? <Eye size={14} /> : <EyeOff size={14} />}
                           </button>
 
                           <button
@@ -1019,7 +1088,7 @@ export function RadarOfertas() {
                             aria-label={`Excluir ${nome}`}
                             onClick={() => void handleDeleteProduto(item.id)}
                           >
-                            <Trash2 size={15} />
+                            <Trash2 size={14} />
                           </button>
                         </div>
                       </div>
