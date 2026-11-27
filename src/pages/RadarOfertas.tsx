@@ -44,6 +44,47 @@ interface DeliveryShortcut {
   brandClass: string;
 }
 
+interface SugestaoProduto {
+  nome: string;
+  preco: number;
+}
+
+interface BuscaApiResult {
+  id: string;
+  menor_preco_encontrado: number | null;
+  mercado_vencedor: string | null;
+  link_oferta: string | null;
+  super_oferta: boolean;
+  atualizado_em: string;
+}
+
+const SUGESTOES_PRODUTOS: SugestaoProduto[] = [
+  { nome: 'Café Pilão 500g', preco: 22.0 },
+  { nome: 'Arroz 5kg', preco: 28.0 },
+  { nome: 'Feijão Carioca 1kg', preco: 8.5 },
+  { nome: 'Leite Integral 1L', preco: 5.5 },
+  { nome: 'Azeite Extra Virgem 500ml', preco: 42.0 },
+  { nome: 'Óleo de Soja 900ml', preco: 7.5 },
+  { nome: 'Açúcar Refinado 1kg', preco: 5.0 },
+  { nome: 'Sabão em Pó 1,6kg', preco: 24.0 },
+  { nome: 'Papel Higiênico 12 rolos', preco: 22.0 },
+  { nome: 'Peito de Frango 1kg', preco: 22.0 },
+];
+
+const STALE_EXECUCAO_MS = 3 * 60 * 1000;
+
+function normalizeKey(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function getProdutoNome(item: RadarProduto): string {
+  return item.nome || item.produto || item.nome_produto || 'Produto';
+}
+
 const DELIVERY_SHORTCUTS: DeliveryShortcut[] = [
   {
     id: 'ifood',
@@ -103,12 +144,16 @@ export function RadarOfertas() {
   const [loadingProdutos, setLoadingProdutos] = useState(true);
   const [execucaoStatus, setExecucaoStatus] = useState<string | null>(null);
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
+  const [successMessage, setSuccessMessage] = useState(
+    'Busca concluída! Ofertas atualizadas com sucesso.'
+  );
   const [submittingSearch, setSubmittingSearch] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const [novoNome, setNovoNome] = useState('');
   const [novoPreco, setNovoPreco] = useState('');
   const [addingItem, setAddingItem] = useState(false);
+  const [addingSugestao, setAddingSugestao] = useState<string | null>(null);
 
   const loadProdutos = useCallback(async () => {
     const { data, error } = await supabase
@@ -132,7 +177,14 @@ export function RadarOfertas() {
         getExecucaoTimestamp(b).localeCompare(getExecucaoTimestamp(a))
       );
       const latest = sorted[0];
-      if (latest?.status === 'pendente' || latest?.status === 'rodando') {
+      const ts = getExecucaoTimestamp(latest);
+      const ageMs = ts ? Date.now() - new Date(ts).getTime() : 0;
+      const isFresh = Number.isFinite(ageMs) && ageMs < STALE_EXECUCAO_MS;
+
+      if (
+        isFresh &&
+        (latest?.status === 'pendente' || latest?.status === 'rodando')
+      ) {
         setExecucaoStatus(latest.status);
       } else {
         setExecucaoStatus(null);
@@ -200,7 +252,66 @@ export function RadarOfertas() {
   const handleBuscarPromocoes = async () => {
     setErrorMsg(null);
     setShowSuccessBanner(false);
+
+    if (produtos.length === 0) {
+      setErrorMsg('Adicione pelo menos 1 produto na lista antes de buscar.');
+      return;
+    }
+
     setSubmittingSearch(true);
+
+    try {
+      const response = await fetch('/api/buscar-ofertas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          produtos: produtos.map((item) => ({
+            id: item.id,
+            nome: getProdutoNome(item),
+            preco_referencia: Number(item.preco_referencia || 0),
+          })),
+        }),
+      });
+
+      if (response.ok) {
+        const payload = (await response.json()) as {
+          results?: BuscaApiResult[];
+          elapsedMs?: number;
+        };
+        const results = payload.results ?? [];
+        const encontrados = results.filter(
+          (r) => r.menor_preco_encontrado !== null
+        );
+
+        await Promise.all(
+          encontrados.map((item) =>
+            supabase
+              .from('radar_produtos')
+              .update({
+                menor_preco_encontrado: item.menor_preco_encontrado,
+                mercado_vencedor: item.mercado_vencedor,
+                link_oferta: item.link_oferta,
+                super_oferta: item.super_oferta,
+                atualizado_em: item.atualizado_em,
+              })
+              .eq('id', item.id)
+          )
+        );
+
+        await loadProdutos();
+        const segundos = payload.elapsedMs
+          ? ` em ${(payload.elapsedMs / 1000).toFixed(1)}s`
+          : '';
+        setSuccessMessage(
+          `Busca concluída${segundos}! ${encontrados.length} de ${produtos.length} item(ns) atualizado(s).`
+        );
+        setShowSuccessBanner(true);
+        setSubmittingSearch(false);
+        return;
+      }
+    } catch {
+      // Fallback para fila do worker local caso /api/buscar-ofertas não esteja disponível
+    }
 
     const { error } = await supabase
       .from('radar_execucoes')
@@ -213,7 +324,33 @@ export function RadarOfertas() {
       return;
     }
 
+    setSuccessMessage('Busca concluída! Ofertas atualizadas com sucesso.');
     setExecucaoStatus('pendente');
+  };
+
+  const handleAddSugestao = async (sugestao: SugestaoProduto) => {
+    setErrorMsg(null);
+    setAddingSugestao(sugestao.nome);
+
+    const { data, error } = await supabase
+      .from('radar_produtos')
+      .insert({
+        nome: sugestao.nome,
+        preco_referencia: sugestao.preco,
+      })
+      .select()
+      .single();
+
+    setAddingSugestao(null);
+
+    if (error) {
+      setErrorMsg('Não foi possível adicionar o item sugerido.');
+      return;
+    }
+
+    if (data) {
+      setProdutos((prev) => sortProdutos([data as RadarProduto, ...prev]));
+    }
   };
 
   const handleAddProduto = async (e: FormEvent) => {
@@ -268,6 +405,18 @@ export function RadarOfertas() {
   };
 
   const isBuscando = execucaoStatus === 'pendente' || execucaoStatus === 'rodando';
+  const nomesNaLista = new Set(produtos.map((p) => normalizeKey(getProdutoNome(p))));
+
+  useEffect(() => {
+    if (execucaoStatus !== 'pendente') return;
+    const timer = window.setTimeout(() => {
+      setExecucaoStatus(null);
+      setErrorMsg(
+        'O worker local não respondeu em 25s. Verifique se ele está ativo ou use a versão publicada na Vercel.'
+      );
+    }, 25000);
+    return () => window.clearTimeout(timer);
+  }, [execucaoStatus]);
 
   return (
     <main className="radar-root">
@@ -299,17 +448,17 @@ export function RadarOfertas() {
             )}
           </button>
 
-          {isBuscando && (
+          {(submittingSearch || isBuscando) && (
             <div className="radar-status-banner radar-status-running" role="status">
               <Loader2 size={18} className="radar-spinner" />
               <span>Buscando ofertas no Tauste e Carrefour...</span>
             </div>
           )}
 
-          {showSuccessBanner && !isBuscando && (
+          {showSuccessBanner && !submittingSearch && !isBuscando && (
             <div className="radar-status-banner radar-status-success" role="status">
               <CheckCircle2 size={18} style={{ flexShrink: 0 }} />
-              <span>Busca concluída! Ofertas atualizadas com sucesso.</span>
+              <span>{successMessage}</span>
             </div>
           )}
 
@@ -355,6 +504,40 @@ export function RadarOfertas() {
               Lista Monitorada (Tauste &amp; Carrefour)
             </h2>
             <span className="radar-section-badge">Meta: &gt;50% OFF</span>
+          </div>
+
+          <div className="radar-suggestions-card">
+            <div className="radar-suggestions-header">
+              <span className="radar-suggestions-title">
+                Adicionar rápido à lista
+              </span>
+              <span className="radar-suggestions-hint">1 clique</span>
+            </div>
+            <div className="radar-suggestions-grid">
+              {SUGESTOES_PRODUTOS.map((sug) => {
+                const jaNaLista = nomesNaLista.has(normalizeKey(sug.nome));
+                const isAddingThis = addingSugestao === sug.nome;
+                return (
+                  <button
+                    key={sug.nome}
+                    type="button"
+                    className={`radar-suggestion-chip ${
+                      jaNaLista ? 'is-added' : ''
+                    }`}
+                    disabled={jaNaLista || isAddingThis}
+                    onClick={() => void handleAddSugestao(sug)}
+                  >
+                    <span>
+                      {jaNaLista ? '✓ ' : isAddingThis ? '... ' : '+ '}
+                      {sug.nome}
+                    </span>
+                    <span className="radar-suggestion-price">
+                      {formatBRL(sug.preco)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <form className="radar-form-card" onSubmit={handleAddProduto}>
